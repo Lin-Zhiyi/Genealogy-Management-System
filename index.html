@@ -1652,9 +1652,10 @@
         }
       }
 
-      // ==================== 云端同步 ====================
+      // 云端 API 地址（相对路径，使用 Pages Functions）
       const CLOUD_API_URL = '/api/data';
 
+      // 上传本地数据到云端
       async function syncToCloud() {
         const data = JSON.stringify(appData);
         showInfoBar('正在上传到云端...', 0);
@@ -1675,6 +1676,7 @@
         }
       }
 
+      // 从云端下载数据并覆盖本地（手动确认）
       async function loadFromCloud() {
         if (!confirm('从云端加载将覆盖当前所有数据，确定继续吗？')) return;
         showInfoBar('正在从云端加载...', 0);
@@ -1714,7 +1716,41 @@
           showInfoBar(`❌ 网络错误: ${e.message}`, 3000);
         }
       }
-      // ==================== 云端同步结束 ====================
+
+      // 启动时自动从云端同步（无弹窗）
+      async function autoSyncOnStartup() {
+        try {
+          const response = await fetch(CLOUD_API_URL);
+          if (!response.ok) return; // 云端无数据或网络不通，静默放弃
+
+          const cloudData = await response.json();
+          if (!cloudData.families || !Array.isArray(cloudData.families)) return;
+
+          // 用云端数据替换本地数据
+          appData = cloudData;
+          appData.families.forEach(f => { if (f.preface === undefined) f.preface = ''; });
+          if (appData.families.length === 0) {
+            const fam = createDefaultFamily();
+            appData.families.push(fam);
+            appData.currentFamilyId = fam.id;
+          } else if (!appData.families.find(f => f.id === appData.currentFamilyId)) {
+            appData.currentFamilyId = appData.families[0].id;
+          }
+
+          // 刷新界面
+          selectedNodeId = null;
+          expandedNodeIds.clear();
+          const root = getCurrentRoot();
+          if (root) expandedNodeIds.add(root.id);
+          saveData();           // 同步到 localStorage
+          renderTree();
+          refreshDetailView();
+          updateFamilySelector();
+          // 静默成功，不弹提示
+        } catch (e) {
+          // 网络错误，静默放弃，使用本地数据
+        }
+      }
 
       function showHelp() {
         alert(
@@ -1833,6 +1869,8 @@
         renderTree();
         updateStatusBar();
         updateFamilySelector();
+        // 启动时自动从云端拉取数据，无弹窗
+        autoSyncOnStartup();
         document.querySelectorAll('.menu-item[data-menu]').forEach(item => {
           const dd = item.querySelector('.dropdown-menu');
           if (dd) {
