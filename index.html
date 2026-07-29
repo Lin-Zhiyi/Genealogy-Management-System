@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
@@ -87,6 +87,13 @@
 
     .app-title {
       flex: 1;
+    }
+
+    .app-version {
+      font-size: 11px;
+      font-weight: 400;
+      color: #888;
+      margin-left: 8px;
     }
 
     .menu-bar {
@@ -197,6 +204,15 @@
       background: #d0d0d0;
       margin: 2px 4px;
       align-self: stretch;
+    }
+
+    .family-selector {
+      padding: 4px 8px;
+      border: 1px solid #c0c0c0;
+      border-radius: 4px;
+      font-size: 12px;
+      background: #fff;
+      cursor: pointer;
     }
 
     .main-body {
@@ -659,6 +675,19 @@
       flex-shrink: 0;
     }
 
+    .copyright-bar {
+      background: #e8e8e8;
+      border-top: 1px solid #d0d0d0;
+      padding: 5px 14px;
+      font-size: 10.5px;
+      color: #888;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+
     .context-menu {
       position: fixed;
       background: #fafafa;
@@ -822,14 +851,14 @@
   <div class="app-window" id="appWindow">
     <div class="title-bar">
       <div class="app-icon">林</div>
-      <span class="app-title">族谱管理系统</span>
+      <span class="app-title">族谱管理系统 <span class="app-version">v1.0</span></span>
     </div>
     <div class="menu-bar">
       <div class="menu-item" data-menu="file" id="menuFile">文件
         <div class="dropdown-menu" id="dropdownFile">
-          <div class="dm-item" onclick="exportData()">📤 导出</div>
+          <div class="dm-item" onclick="exportData()">📤 导出所有家族</div>
           <div class="dm-item" onclick="importData()">📥 导入</div>
-          <div class="dm-item danger" onclick="resetAllData()">🗑️ 重置</div>
+          <div class="dm-item danger" onclick="resetAllData()">🗑️ 重置全部</div>
         </div>
       </div>
       <div class="menu-item" data-menu="edit" id="menuEdit">编辑
@@ -842,9 +871,15 @@
       </div>
       <div class="menu-item" id="menuSearch" onclick="openSearchDialog()">🔍 搜索</div>
       <span class="separator"></span>
+      <div class="menu-item" onclick="openFamilyManageDialog()">👨‍👩‍👧‍👦 家族管理</div>
       <div class="menu-item" onclick="showHelp()">帮助</div>
     </div>
     <div class="toolbar">
+      <select class="family-selector" id="familySelector" onchange="switchFamily(this.value)">
+      </select>
+      <span class="tb-separator"></span>
+      <button onclick="openPrefaceDialog()">📜 序言</button>
+      <span class="tb-separator"></span>
       <button class="primary" onclick="addChildMember()">➕ 添加子成员</button>
       <button onclick="addSiblingMember()">👥 添加兄弟</button>
       <span class="tb-separator"></span>
@@ -911,6 +946,11 @@
       <span>📍 代际：</span><span class="status-path" id="statusPath">族谱管理系统</span>
       <span class="status-count" id="statusCount">共 0 位成员</span>
     </div>
+    <div class="copyright-bar">
+      <span>版权所有©2026 林及第</span>
+      <span>|</span>
+      <span>联系方式：ld-1212@163.com</span>
+    </div>
   </div>
   <div class="context-menu" id="contextMenu">
     <div class="cm-item" onclick="addChildMember()">➕ 添加子成员</div>
@@ -921,15 +961,14 @@
   <input type="file" id="fileInput" accept=".json" style="display:none;" onchange="handleFileImport(event)">
   <script>
     (function() {
-      const STORAGE_KEY = 'jiumu_family_v16';
-      let familyData = null;
+      const STORAGE_KEY = 'jiumu_family_multi_v3';
+      let appData = { families: [], currentFamilyId: null };
       let selectedNodeId = null;
       let expandedNodeIds = new Set();
       let currentTab = 'properties';
       let relationViewMode = 'full';
       let currentScale = 1;
-      let customUp = 2,
-        customDown = 2;
+      let customUp = 2, customDown = 2;
       let pendingDelete = null;
       let autoFitEnabled = false;
 
@@ -939,7 +978,17 @@
         return 'n' + Date.now() + Math.random().toString(36).substr(2, 8);
       }
 
-      function createTestData() {
+      function getCurrentFamily() {
+        if (!appData.currentFamilyId || appData.families.length === 0) return null;
+        return appData.families.find(f => f.id === appData.currentFamilyId) || null;
+      }
+
+      function getCurrentRoot() {
+        const fam = getCurrentFamily();
+        return fam ? fam.root : null;
+      }
+
+      function createDefaultFamily() {
         const root = {
           id: 'root',
           name: '族谱管理系统',
@@ -949,58 +998,224 @@
         const ancestor = {
           id: generateId(),
           name: '林始祖',
-          attributes: [{ name: '性别', value: '男' }, { name: '出生日期', value: '1520-03-15' }, { name: '配偶',
-            value: '陈氏' }, { name: '出生地', value: '福建莆田' }],
+          attributes: [{ name: '性别', value: '男' }, { name: '出生日期', value: '1520-03-15' }, { name: '配偶', value: '陈氏' }, { name: '出生地', value: '福建莆田' }],
           children: []
         };
         root.children.push(ancestor);
         let total = 1;
-        const chars = ['建', '文', '明', '龙', '伟', '强', '志', '宇', '浩', '博', '健', '泽', '瑞', '荣', '华', '国', '家', '兴',
-          '盛', '德', '仁', '义', '礼', '智', '信', '孝', '忠', '勇', '贤', '良'
-        ];
-        const places = ['福建莆田', '福建厦门', '福建福州', '福建泉州', '福建漳州'];
-
-        function rInt(a, b) { return Math.floor(Math.random() * (b - a + 1)) + a; }
-
-        function gen(node, depth) {
-          if (depth >= 7 || total >= 300) return;
-          let maxSons = depth < 2 ? Math.min(8, 300 - total) : (depth < 4 ? Math.min(6, 300 - total) : Math.min(4,
-            300 - total));
-          for (let i = 0; i < rInt(1, Math.max(1, maxSons)); i++) {
-            if (total >= 300) break;
-            const given = chars[rInt(0, chars.length - 1)] + (Math.random() > 0.6 ? chars[rInt(0, chars.length - 1)] :
-              '');
-            const birthYear = 1520 + depth * 28 + rInt(0, 25);
-            const birthDate = birthYear + '-' + (rInt(1, 12) + '').padStart(2, '0') + '-' + (rInt(1, 28) + '').padStart(2,
-              '0');
-            const spouse = Math.random() > 0.4 ? ['陈', '王', '李', '张', '黄', '吴', '郑'][rInt(0, 6)] + '氏' : '';
-            const son = {
-              id: generateId(),
-              name: '林' + given,
-              attributes: [{ name: '性别', value: '男' }, { name: '出生日期', value: birthDate }, { name: '配偶',
-                value: spouse }, { name: '出生地', value: places[rInt(0, places.length - 1)] }],
-              children: []
-            };
-            node.children.push(son);
-            total++;
-            gen(son, depth + 1);
+        const chars = ['建','文','明','龙','伟','强','志','宇','浩','博','健','泽','瑞','荣','华','国','家','兴','盛','德','仁','义','礼','智','信','孝','忠','勇','贤','良'];
+        const places = ['福建莆田','福建厦门','福建福州','福建泉州','福建漳州'];
+        function rInt(a,b){ return Math.floor(Math.random()*(b-a+1))+a; }
+        function gen(node, depth){
+          if(depth>=7||total>=300) return;
+          let maxSons = depth<2?Math.min(8,300-total):(depth<4?Math.min(6,300-total):Math.min(4,300-total));
+          for(let i=0;i<rInt(1,Math.max(1,maxSons));i++){
+            if(total>=300) break;
+            const given = chars[rInt(0,chars.length-1)]+(Math.random()>0.6?chars[rInt(0,chars.length-1)]:'');
+            const birthYear = 1520+depth*28+rInt(0,25);
+            const birthDate = birthYear+'-'+(rInt(1,12)+'').padStart(2,'0')+'-'+(rInt(1,28)+'').padStart(2,'0');
+            const spouse = Math.random()>0.4?['陈','王','李','张','黄','吴','郑'][rInt(0,6)]+'氏':'';
+            const son = { id:generateId(), name:'林'+given, attributes:[{name:'性别',value:'男'},{name:'出生日期',value:birthDate},{name:'配偶',value:spouse},{name:'出生地',value:places[rInt(0,places.length-1)]}], children:[] };
+            node.children.push(son); total++; gen(son,depth+1);
           }
         }
-        gen(ancestor, 1);
-        return root;
+        gen(ancestor,1);
+        return { id: generateId(), name: '林氏家族', root: root, preface: '' };
       }
 
       function loadData() {
         const s = localStorage.getItem(STORAGE_KEY);
         if (s) {
-          try { familyData = JSON.parse(s); if (!familyData.isRoot) throw new Error(); } catch (e) { familyData =
-              createTestData(); }
-        } else { familyData = createTestData(); }
+          try {
+            appData = JSON.parse(s);
+            if (!appData.families || !Array.isArray(appData.families)) throw new Error();
+            appData.families.forEach(f => { if (f.preface === undefined) f.preface = ''; });
+            if (appData.families.length === 0) {
+              const fam = createDefaultFamily();
+              appData.families.push(fam);
+              appData.currentFamilyId = fam.id;
+            } else if (!appData.currentFamilyId || !appData.families.find(f=>f.id===appData.currentFamilyId)) {
+              appData.currentFamilyId = appData.families[0].id;
+            }
+          } catch (e) {
+            appData = { families: [], currentFamilyId: null };
+            const fam = createDefaultFamily();
+            appData.families.push(fam);
+            appData.currentFamilyId = fam.id;
+          }
+        } else {
+          const fam = createDefaultFamily();
+          appData.families = [fam];
+          appData.currentFamilyId = fam.id;
+        }
         saveData();
+        updateFamilySelector();
       }
 
-      function saveData() { localStorage.setItem(STORAGE_KEY, JSON.stringify(familyData));
-        updateStatusBar(); }
+      function saveData() {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(appData));
+        updateStatusBar();
+      }
+
+      function updateFamilySelector() {
+        const sel = document.getElementById('familySelector');
+        if (!sel) return;
+        sel.innerHTML = '';
+        appData.families.forEach(f => {
+          const opt = document.createElement('option');
+          opt.value = f.id;
+          opt.textContent = f.name;
+          if (f.id === appData.currentFamilyId) opt.selected = true;
+          sel.appendChild(opt);
+        });
+      }
+
+      window.switchFamily = function(familyId) {
+        if (!familyId || familyId === appData.currentFamilyId) return;
+        appData.currentFamilyId = familyId;
+        selectedNodeId = null;
+        expandedNodeIds.clear();
+        const root = getCurrentRoot();
+        if (root) expandedNodeIds.add(root.id);
+        saveData();
+        renderTree();
+        refreshDetailView();
+        updateFamilySelector();
+      };
+
+      function openPrefaceDialog() {
+        const fam = getCurrentFamily();
+        if (!fam) return;
+        const overlay = document.createElement('div');
+        overlay.className = 'modal-overlay';
+        overlay.innerHTML = `
+          <div class="modal-dialog" style="width:600px; max-width:95vw;">
+            <div class="modal-header">📜 家族序言 - ${escapeHtml(fam.name)}</div>
+            <div class="modal-body">
+              <textarea id="prefaceTextarea" style="width:100%; height:300px; padding:10px; font-size:13px; resize:vertical; border:1px solid #ccc; border-radius:4px;">${escapeHtml(fam.preface || '')}</textarea>
+            </div>
+            <div class="modal-footer">
+              <button class="btn-cancel" id="prefaceCancel">取消</button>
+              <button class="btn-primary" id="prefaceSave">保存</button>
+            </div>
+          </div>`;
+        document.body.appendChild(overlay);
+        overlay.querySelector('#prefaceCancel').onclick = () => overlay.remove();
+        overlay.querySelector('#prefaceSave').onclick = () => {
+          const textarea = overlay.querySelector('#prefaceTextarea');
+          fam.preface = textarea.value;
+          saveData();
+          overlay.remove();
+          showInfoBar('序言已保存');
+        };
+      }
+
+      function openFamilyManageDialog() {
+        const overlay = document.createElement('div');
+        overlay.className = 'modal-overlay';
+        let listHtml = appData.families.map(f => `
+          <div style="display:flex; align-items:center; justify-content:space-between; padding:6px 0; border-bottom:1px solid #eee;">
+            <span style="flex:1;">${escapeHtml(f.name)} ${f.id === appData.currentFamilyId ? '(当前)' : ''}</span>
+            <div>
+              <button data-action="switch" data-id="${f.id}" style="margin-right:4px;">切换</button>
+              <button data-action="rename" data-id="${f.id}" style="margin-right:4px;">重命名</button>
+              <button data-action="delete" data-id="${f.id}" style="color:#c42b1c;" ${appData.families.length<=1?'disabled':''}>删除</button>
+            </div>
+          </div>
+        `).join('');
+        overlay.innerHTML = `
+          <div class="modal-dialog" style="width:500px;">
+            <div class="modal-header">家族管理</div>
+            <div class="modal-body">
+              <div style="margin-bottom:12px;">
+                <button id="newFamilyBtn" class="btn-primary" style="padding:6px 12px;">➕ 新建家族</button>
+              </div>
+              <div id="familyList">${listHtml}</div>
+            </div>
+            <div class="modal-footer"><button class="btn-cancel" id="closeManage">关闭</button></div>
+          </div>`;
+        document.body.appendChild(overlay);
+        overlay.querySelector('#closeManage').onclick = () => overlay.remove();
+        overlay.querySelector('#newFamilyBtn').onclick = () => {
+          const name = prompt('请输入新家族名称：');
+          if (name && name.trim()) {
+            const newRoot = { id: 'root', name: name.trim(), isRoot: true, children: [] };
+            const newFam = { id: generateId(), name: name.trim(), root: newRoot, preface: '' };
+            appData.families.push(newFam);
+            appData.currentFamilyId = newFam.id;
+            selectedNodeId = null;
+            expandedNodeIds.clear();
+            expandedNodeIds.add(newRoot.id);
+            saveData();
+            renderTree();
+            refreshDetailView();
+            updateFamilySelector();
+            overlay.remove();
+          }
+        };
+        overlay.querySelector('#familyList').addEventListener('click', (e) => {
+          const btn = e.target.closest('button');
+          if (!btn) return;
+          const action = btn.dataset.action;
+          const fid = btn.dataset.id;
+          if (action === 'switch') {
+            switchFamily(fid);
+            overlay.remove();
+          } else if (action === 'rename') {
+            const fam = appData.families.find(f => f.id === fid);
+            if (!fam) return;
+            const newName = prompt('新名称：', fam.name);
+            if (newName && newName.trim()) {
+              fam.name = newName.trim();
+              saveData();
+              updateFamilySelector();
+              renderTree();
+              refreshDetailView();
+              overlay.querySelector('#familyList').innerHTML = appData.families.map(f => `
+                <div style="display:flex; align-items:center; justify-content:space-between; padding:6px 0; border-bottom:1px solid #eee;">
+                  <span style="flex:1;">${escapeHtml(f.name)} ${f.id === appData.currentFamilyId ? '(当前)' : ''}</span>
+                  <div>
+                    <button data-action="switch" data-id="${f.id}" style="margin-right:4px;">切换</button>
+                    <button data-action="rename" data-id="${f.id}" style="margin-right:4px;">重命名</button>
+                    <button data-action="delete" data-id="${f.id}" style="color:#c42b1c;" ${appData.families.length<=1?'disabled':''}>删除</button>
+                  </div>
+                </div>
+              `).join('');
+            }
+          } else if (action === 'delete') {
+            if (appData.families.length <= 1) {
+              alert('至少保留一个家族');
+              return;
+            }
+            const fam = appData.families.find(f => f.id === fid);
+            if (!fam) return;
+            if (confirm(`确定删除家族「${fam.name}」及其所有数据吗？`)) {
+              appData.families = appData.families.filter(f => f.id !== fid);
+              if (appData.currentFamilyId === fid) {
+                appData.currentFamilyId = appData.families[0].id;
+              }
+              selectedNodeId = null;
+              expandedNodeIds.clear();
+              const root = getCurrentRoot();
+              if (root) expandedNodeIds.add(root.id);
+              saveData();
+              renderTree();
+              refreshDetailView();
+              updateFamilySelector();
+              overlay.querySelector('#familyList').innerHTML = appData.families.map(f => `
+                <div style="display:flex; align-items:center; justify-content:space-between; padding:6px 0; border-bottom:1px solid #eee;">
+                  <span style="flex:1;">${escapeHtml(f.name)} ${f.id === appData.currentFamilyId ? '(当前)' : ''}</span>
+                  <div>
+                    <button data-action="switch" data-id="${f.id}" style="margin-right:4px;">切换</button>
+                    <button data-action="rename" data-id="${f.id}" style="margin-right:4px;">重命名</button>
+                    <button data-action="delete" data-id="${f.id}" style="color:#c42b1c;" ${appData.families.length<=1?'disabled':''}>删除</button>
+                  </div>
+                </div>
+              `).join('');
+            }
+          }
+        });
+      }
 
       function findNodeById(node, id) {
         if (node.id === id) return node;
@@ -1010,55 +1225,44 @@
 
       function findParentNode(root, targetId) {
         if (!root.children) return null;
-        for (const c of root.children) { if (c.id === targetId) return root; const f = findParentNode(c, targetId); if (f)
-            return f; }
+        for (const c of root.children) { if (c.id === targetId) return root; const f = findParentNode(c, targetId); if (f) return f; }
         return null;
       }
 
-      function countMembers(node) { let c = node.isRoot ? 0 : 1; if (node.children) for (const ch of node.children) c +=
-          countMembers(ch); return c; }
+      function countMembers(node) { let c = node.isRoot ? 0 : 1; if (node.children) for (const ch of node.children) c += countMembers(ch); return c; }
 
-      function getAttr(node, name) { if (!node || !node.attributes) return ''; const a = node.attributes.find(a => a.name ===
-          name); return a ? a.value : ''; }
+      function getAttr(node, name) { if (!node || !node.attributes) return ''; const a = node.attributes.find(a => a.name === name); return a ? a.value : ''; }
 
-      function setAttr(node, name, value) { if (!node.attributes) node.attributes = []; const a = node.attributes.find(a => a
-          .name === name); if (a) a.value = value;
-        else node.attributes.push({ name, value }); }
+      function setAttr(node, name, value) { if (!node.attributes) node.attributes = []; const a = node.attributes.find(a => a.name === name); if (a) a.value = value; else node.attributes.push({ name, value }); }
 
       function isMale(node) { return getAttr(node, '性别') !== '女'; }
 
-      function escapeHtml(s) { const d = document.createElement('div');
-        d.textContent = s || ''; return d.innerHTML; }
+      function escapeHtml(s) { const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
 
       function sortByBirthDateDesc(nodes) {
-        return nodes.sort((a, b) => { const dateA = getAttr(a, '出生日期') || '0000-00-00'; const dateB = getAttr(b,
-            '出生日期') || '0000-00-00'; return dateA.localeCompare(dateB); });
+        return nodes.sort((a, b) => { const dateA = getAttr(a, '出生日期') || '0000-00-00'; const dateB = getAttr(b, '出生日期') || '0000-00-00'; return dateA.localeCompare(dateB); });
       }
 
       function isDateValid(dateStr) {
         if (!dateStr) return true;
         const parts = dateStr.split('-');
         if (parts.length !== 3) return false;
-        const year = parseInt(parts[0]);
-        const month = parseInt(parts[1]);
-        const day = parseInt(parts[2]);
+        const year = parseInt(parts[0]), month = parseInt(parts[1]), day = parseInt(parts[2]);
         if (isNaN(year) || isNaN(month) || isNaN(day)) return false;
         if (month < 1 || month > 12 || day < 1 || day > 31) return false;
         const inputDate = new Date(year, month - 1, day);
         if (inputDate.getFullYear() !== year || inputDate.getMonth() !== month - 1 || inputDate.getDate() !== day) return false;
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
+        const today = new Date(); today.setHours(0,0,0,0);
         return inputDate <= today;
       }
 
       function getNodePath(node) {
         const path = [];
         let current = node;
+        const root = getCurrentRoot();
         while (current) {
-          if (!current.isRoot) {
-            path.unshift(current.name);
-          }
-          current = findParentNode(familyData, current.id);
+          if (!current.isRoot) path.unshift(current.name);
+          current = findParentNode(root, current.id);
         }
         return path;
       }
@@ -1066,7 +1270,8 @@
       function renderTree() {
         const treeRoot = document.getElementById('treeRoot');
         treeRoot.innerHTML = '';
-
+        const root = getCurrentRoot();
+        if (!root) return;
         function renderNode(node, depth, cont) {
           const div = document.createElement('div');
           div.className = 'tree-node';
@@ -1087,8 +1292,7 @@
           div.appendChild(icon);
           div.appendChild(document.createTextNode(node.name));
           div.onclick = e => { selectNode(node.id); };
-          div.oncontextmenu = e => { e.preventDefault();
-            showContextMenu(e.clientX, e.clientY, node); };
+          div.oncontextmenu = e => { e.preventDefault(); showContextMenu(e.clientX, e.clientY, node); };
           cont.appendChild(div);
           if (hasChildren && expandedNodeIds.has(node.id)) {
             const cc = document.createElement('div');
@@ -1097,31 +1301,25 @@
             for (const c of sortedChildren) renderNode(c, depth + 1, cc);
             cont.appendChild(cc);
           }
-          // 滚动到选中节点
           if (node.id === selectedNodeId) {
-            setTimeout(() => {
-              div.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            }, 100);
+            setTimeout(() => { div.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, 100);
           }
         }
-        renderNode(familyData, 0, treeRoot);
-        if (!expandedNodeIds.has(familyData.id)) { expandedNodeIds.add(familyData.id);
-          renderTree(); return; }
+        renderNode(root, 0, treeRoot);
+        if (!expandedNodeIds.has(root.id)) { expandedNodeIds.add(root.id); renderTree(); return; }
         updateStatusBar();
       }
 
-      function toggleExpand(id) { if (expandedNodeIds.has(id)) expandedNodeIds.delete(id);
-        else expandedNodeIds.add(id);
-        renderTree(); if (selectedNodeId) refreshDetailView(); }
+      function toggleExpand(id) { if (expandedNodeIds.has(id)) expandedNodeIds.delete(id); else expandedNodeIds.add(id); renderTree(); if (selectedNodeId) refreshDetailView(); }
 
-      function selectNode(id) { selectedNodeId = id;
-        refreshDetailView();
-        renderTree();
-        updateStatusBar(); }
+      function selectNode(id) { selectedNodeId = id; refreshDetailView(); renderTree(); updateStatusBar(); }
 
-      function refreshDetailView() { const n = selectedNodeId ? findNodeById(familyData, selectedNodeId) : null; if (
-          currentTab === 'properties') renderDetailPanel(n);
-        else renderOrgChart(n); }
+      function refreshDetailView() {
+        const root = getCurrentRoot();
+        const n = selectedNodeId && root ? findNodeById(root, selectedNodeId) : null;
+        if (currentTab === 'properties') renderDetailPanel(n);
+        else renderOrgChart(n);
+      }
 
       function renderDetailPanel(node) {
         document.getElementById('detailTitle').textContent = node ? '👤 ' + node.name : '请选择一个成员';
@@ -1131,20 +1329,13 @@
         } else {
           document.getElementById('detailPath').textContent = '';
         }
-        const empty = document.getElementById('emptyState'),
-          table = document.getElementById('attrTable'),
-          tbody = document.getElementById('attrTableBody');
-        if (!node || node.isRoot) { empty.style.display = 'flex';
-          table.style.display = 'none'; return; }
-        empty.style.display = 'none';
-        table.style.display = 'table';
-        tbody.innerHTML = '';
+        const empty = document.getElementById('emptyState'), table = document.getElementById('attrTable'), tbody = document.getElementById('attrTableBody');
+        if (!node || node.isRoot) { empty.style.display = 'flex'; table.style.display = 'none'; return; }
+        empty.style.display = 'none'; table.style.display = 'table'; tbody.innerHTML = '';
         const sons = node.children ? node.children.filter(c => getAttr(c, '性别') === '男') : [];
         const daughters = node.children ? node.children.filter(c => getAttr(c, '性别') === '女') : [];
-        const sonsHtml = sons.length ? sons.map(c =>
-          `<span class="child-link" data-child-id="${c.id}">${escapeHtml(c.name)}</span>`).join('、') : '（无）';
-        const daughtersHtml = daughters.length ? daughters.map(c =>
-          `<span class="child-link" data-child-id="${c.id}">${escapeHtml(c.name)}</span>`).join('、') : '（无）';
+        const sonsHtml = sons.length ? sons.map(c => `<span class="child-link" data-child-id="${c.id}">${escapeHtml(c.name)}</span>`).join('、') : '（无）';
+        const daughtersHtml = daughters.length ? daughters.map(c => `<span class="child-link" data-child-id="${c.id}">${escapeHtml(c.name)}</span>`).join('、') : '（无）';
         const fixedFields = [
           { name: '姓名', value: node.name, attr: null, type: 'text' },
           { name: '性别', value: getAttr(node, '性别'), attr: '性别', type: 'select' },
@@ -1167,23 +1358,14 @@
           { name: '简介', value: getAttr(node, '简介'), attr: '简介', type: 'textarea' },
           { name: '备注', value: getAttr(node, '备注'), attr: '备注', type: 'textarea' }
         ];
-        const allRows = [...fixedFields, ...customFields.map(c => ({ name: c.name, value: c.value, attr: c.name,
-          customIdx: c.idx, type: 'text' })), ...trailingFields];
+        const allRows = [...fixedFields, ...customFields.map(c => ({ name: c.name, value: c.value, attr: c.name, customIdx: c.idx, type: 'text' })), ...trailingFields];
         allRows.forEach(f => {
           const tr = document.createElement('tr');
-          const tdName = document.createElement('td');
-          tdName.className = 'col-name';
-          tdName.textContent = f.name;
-          const tdData = document.createElement('td');
-          tdData.className = 'col-data';
-          tdData.setAttribute('data-field', f.name);
-          if (f.isHtml) {
-            tdData.innerHTML = f.value;
-          } else {
-            tdData.innerHTML = `<span class="data-text">${escapeHtml(f.value || '（空）')}</span>`;
-          }
-          tr.appendChild(tdName);
-          tr.appendChild(tdData);
+          const tdName = document.createElement('td'); tdName.className = 'col-name'; tdName.textContent = f.name;
+          const tdData = document.createElement('td'); tdData.className = 'col-data'; tdData.setAttribute('data-field', f.name);
+          if (f.isHtml) { tdData.innerHTML = f.value; }
+          else { tdData.innerHTML = `<span class="data-text">${escapeHtml(f.value || '（空）')}</span>`; }
+          tr.appendChild(tdName); tr.appendChild(tdData);
           if (f.editable !== false) {
             tdData.addEventListener('dblclick', () => {
               if (f.isHtml) return;
@@ -1198,11 +1380,11 @@
             e.stopPropagation();
             const childId = link.dataset.childId;
             if (childId) {
-              const childNode = findNodeById(familyData, childId);
+              const root = getCurrentRoot();
+              const childNode = findNodeById(root, childId);
               if (childNode) {
                 let p = childNode;
-                while (p) { const par = findParentNode(familyData, p.id); if (par) expandedNodeIds.add(par.id);
-                  p = par; }
+                while (p) { const par = findParentNode(root, p.id); if (par) expandedNodeIds.add(par.id); p = par; }
                 expandedNodeIds.add(childId);
                 selectNode(childId);
                 switchTab('properties');
@@ -1222,84 +1404,43 @@
           input.innerHTML = '<option value="男">男</option><option value="女">女</option>';
           input.value = (currentVal === '男' || currentVal === '女') ? currentVal : '男';
         } else if (fieldType === 'date') {
-          input = document.createElement('input');
-          input.type = 'date';
-          input.value = currentVal || '';
+          input = document.createElement('input'); input.type = 'date'; input.value = currentVal || '';
         } else if (fieldType === 'textarea') {
-          input = document.createElement('textarea');
-          input.value = currentVal || '';
-          input.style.height = 'auto';
-          input.style.minHeight = '60px';
+          input = document.createElement('textarea'); input.value = currentVal || ''; input.style.height = 'auto'; input.style.minHeight = '60px';
         } else {
-          input = document.createElement('input');
-          input.type = 'text';
-          input.value = currentVal || '';
+          input = document.createElement('input'); input.type = 'text'; input.value = currentVal || '';
         }
-        input.style.width = '100%';
-        td.innerHTML = '';
-        td.appendChild(input);
-        input.focus();
+        input.style.width = '100%'; td.innerHTML = ''; td.appendChild(input); input.focus();
         const save = () => {
           let newVal = input.value.trim();
-          if (fieldType === 'select') {
-            if (newVal !== '男' && newVal !== '女') {
-              alert('性别只能是"男"或"女"');
-              input.focus();
-              return;
-            }
-          }
-          if (fieldType === 'date') {
-            if (newVal && !isDateValid(newVal)) {
-              alert('出生日期不能晚于今天，且格式需为YYYY-MM-DD');
-              input.focus();
-              return;
-            }
-          }
-          if (fieldName === '姓名') { if (newVal && newVal !== node.name) { node.name = newVal;
-              saveData();
-              renderTree();
-              selectNode(node.id); } } else if (attrName) { setAttr(node, attrName, newVal);
-            saveData();
-            renderDetailPanel(node); }
+          if (fieldType === 'select') { if (newVal !== '男' && newVal !== '女') { alert('性别只能是"男"或"女"'); input.focus(); return; } }
+          if (fieldType === 'date') { if (newVal && !isDateValid(newVal)) { alert('出生日期不能晚于今天，且格式需为YYYY-MM-DD'); input.focus(); return; } }
+          if (fieldName === '姓名') { if (newVal && newVal !== node.name) { node.name = newVal; saveData(); renderTree(); selectNode(node.id); } }
+          else if (attrName) { setAttr(node, attrName, newVal); saveData(); renderDetailPanel(node); }
         };
         input.addEventListener('blur', save);
-        input.addEventListener('keydown', e => { if (e.key === 'Enter' && fieldType !== 'textarea') { e.preventDefault();
-            save(); } });
+        input.addEventListener('keydown', e => { if (e.key === 'Enter' && fieldType !== 'textarea') { e.preventDefault(); save(); } });
       }
 
       function startEditingCustom(tr, idx, node) {
         const td = tr.querySelector('.col-data');
         if (td.querySelector('input')) return;
         const currentVal = node.attributes[idx] ? node.attributes[idx].value : '';
-        const input = document.createElement('input');
-        input.value = currentVal;
-        td.innerHTML = '';
-        td.appendChild(input);
-        input.focus();
-        const save = () => { if (node.attributes[idx]) { node.attributes[idx].value = input.value.trim();
-            saveData();
-            renderDetailPanel(node); } };
+        const input = document.createElement('input'); input.value = currentVal; td.innerHTML = ''; td.appendChild(input); input.focus();
+        const save = () => { if (node.attributes[idx]) { node.attributes[idx].value = input.value.trim(); saveData(); renderDetailPanel(node); } };
         input.addEventListener('blur', save);
-        input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault();
-            save(); } });
+        input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); save(); } });
       }
 
       function addAttribute() {
-        const node = selectedNodeId ? findNodeById(familyData, selectedNodeId) : null;
+        const node = selectedNodeId && getCurrentRoot() ? findNodeById(getCurrentRoot(), selectedNodeId) : null;
         if (!node || node.isRoot) { alert('请选择一个成员'); return; }
         const name = prompt('新信息名称：');
         if (name && name.trim()) {
           const trimmedName = name.trim();
-          if (trimmedName === '职业' || trimmedName === '简介' || trimmedName === '备注') {
-            alert('该信息已存在固定位置，请使用其他名称');
-            return;
-          }
+          if (trimmedName === '职业' || trimmedName === '简介' || trimmedName === '备注') { alert('该信息已存在固定位置，请使用其他名称'); return; }
           if (!node.attributes) node.attributes = [];
-          const exists = node.attributes.some(a => a.name === trimmedName);
-          if (exists) {
-            alert('该信息已存在');
-            return;
-          }
+          if (node.attributes.some(a => a.name === trimmedName)) { alert('该信息已存在'); return; }
           node.attributes.push({ name: trimmedName, value: '' });
           saveData();
           renderDetailPanel(node);
@@ -1307,671 +1448,348 @@
       }
 
       function deleteAttribute() {
-        const node = selectedNodeId ? findNodeById(familyData, selectedNodeId) : null;
+        const node = selectedNodeId && getCurrentRoot() ? findNodeById(getCurrentRoot(), selectedNodeId) : null;
         if (!node || node.isRoot) return;
         const name = prompt('要删除的信息名称：');
-        if (name && node.attributes) { const idx = node.attributes.findIndex(a => a.name === name); if (idx >= 0) { node
-            .attributes.splice(idx, 1);
-            saveData();
-            renderDetailPanel(node); } else alert('未找到该信息'); }
+        if (name && node.attributes) { const idx = node.attributes.findIndex(a => a.name === name); if (idx >= 0) { node.attributes.splice(idx, 1); saveData(); renderDetailPanel(node); } else alert('未找到该信息'); }
       }
 
       function openSortDialog() {
-        const node = selectedNodeId ? findNodeById(familyData, selectedNodeId) : null;
+        const node = selectedNodeId && getCurrentRoot() ? findNodeById(getCurrentRoot(), selectedNodeId) : null;
         if (!node || node.isRoot || !node.children || node.children.length < 2) { alert('当前成员无子女或子女不足两个，无需排序'); return; }
         const children = [...node.children];
-        const overlay = document.createElement('div');
-        overlay.className = 'modal-overlay';
-        overlay.innerHTML = `<div class="modal-dialog" style="width:400px;"><div class="modal-header">排序子女 (共${children.length}位)</div>
-        <div class="modal-body" id="sortList">${children.map((c, i) => `
-        <div class="sort-item" data-index="${i}">
-          <span>${escapeHtml(c.name)} (${getAttr(c,'性别')})</span>
-          <div>
-            <button class="btn-up" ${i===0?'disabled':''}>▲</button>
-            <button class="btn-down" ${i===children.length-1?'disabled':''}>▼</button>
-          </div>
-        </div>`).join('')}</div>
-        <div class="modal-footer"><button class="btn-cancel" id="sortCancel">取消</button><button class="btn-primary" id="sortOk">保存排序</button></div></div>`;
+        const overlay = document.createElement('div'); overlay.className = 'modal-overlay';
+        overlay.innerHTML = `<div class="modal-dialog" style="width:400px;"><div class="modal-header">排序子女 (共${children.length}位)</div><div class="modal-body" id="sortList">${children.map((c, i) => `<div class="sort-item" data-index="${i}"><span>${escapeHtml(c.name)} (${getAttr(c,'性别')})</span><div><button class="btn-up" ${i===0?'disabled':''}>▲</button><button class="btn-down" ${i===children.length-1?'disabled':''}>▼</button></div></div>`).join('')}</div><div class="modal-footer"><button class="btn-cancel" id="sortCancel">取消</button><button class="btn-primary" id="sortOk">保存排序</button></div></div>`;
         document.body.appendChild(overlay);
         const sortList = overlay.querySelector('#sortList');
-
-        function updateButtons() { const items = sortList.querySelectorAll('.sort-item');
-          items.forEach((item, idx) => { const up = item.querySelector('.btn-up'); const down = item.querySelector(
-              '.btn-down');
-            up.disabled = (idx === 0);
-            down.disabled = (idx === items.length - 1); }); }
-        sortList.addEventListener('click', e => { const btn = e.target; const item = btn.closest('.sort-item'); if (!item)
-            return; const index = Array.from(sortList.children).indexOf(item); if (btn.classList.contains('btn-up') &&
-            index > 0) { sortList.insertBefore(item, sortList.children[index - 1]);
-            updateButtons(); } else if (btn.classList.contains('btn-down') && index < sortList.children.length - 1) {
-            sortList.insertBefore(sortList.children[index + 1], item);
-            updateButtons(); } });
+        function updateButtons() { const items = sortList.querySelectorAll('.sort-item'); items.forEach((item, idx) => { const up = item.querySelector('.btn-up'); const down = item.querySelector('.btn-down'); up.disabled = (idx === 0); down.disabled = (idx === items.length - 1); }); }
+        sortList.addEventListener('click', e => { const btn = e.target; const item = btn.closest('.sort-item'); if (!item) return; const index = Array.from(sortList.children).indexOf(item); if (btn.classList.contains('btn-up') && index > 0) { sortList.insertBefore(item, sortList.children[index - 1]); updateButtons(); } else if (btn.classList.contains('btn-down') && index < sortList.children.length - 1) { sortList.insertBefore(sortList.children[index + 1], item); updateButtons(); } });
         overlay.querySelector('#sortCancel').onclick = () => overlay.remove();
-        overlay.querySelector('#sortOk').onclick = () => { const newOrder = Array.from(sortList.querySelectorAll(
-            '.sort-item')).map(item => { const idx = parseInt(item.dataset.index); return children[idx]; });
-          node.children = newOrder;
-          saveData();
-          renderTree();
-          refreshDetailView();
-          overlay.remove();
-          showInfoBar('子女顺序已更新'); };
+        overlay.querySelector('#sortOk').onclick = () => { const newOrder = Array.from(sortList.querySelectorAll('.sort-item')).map(item => { const idx = parseInt(item.dataset.index); return children[idx]; }); node.children = newOrder; saveData(); renderTree(); refreshDetailView(); overlay.remove(); showInfoBar('子女顺序已更新'); };
       }
 
-      function updateViewModeButtons(mode) { document.querySelectorAll('#viewModeBar button[data-mode]').forEach(b => b
-          .classList.remove('active')); const activeBtn = document.querySelector(`#viewModeBar button[data-mode="${mode}"]`);
-        if (activeBtn) activeBtn.classList.add('active'); }
-
-      function updateZoomButtons() { const btnFit = document.getElementById('btnFitScreen'); const btnOrig = document
-          .getElementById('btnOriginalSize'); if (btnFit) btnFit.classList.toggle('active', autoFitEnabled); if (btnOrig)
-          btnOrig.classList.toggle('active', !autoFitEnabled && currentScale === 1); }
+      function updateViewModeButtons(mode) { document.querySelectorAll('#viewModeBar button[data-mode]').forEach(b => b.classList.remove('active')); const activeBtn = document.querySelector(`#viewModeBar button[data-mode="${mode}"]`); if (activeBtn) activeBtn.classList.add('active'); }
+      function updateZoomButtons() { const btnFit = document.getElementById('btnFitScreen'); const btnOrig = document.getElementById('btnOriginalSize'); if (btnFit) btnFit.classList.toggle('active', autoFitEnabled); if (btnOrig) btnOrig.classList.toggle('active', !autoFitEnabled && currentScale === 1); }
 
       function setViewMode(mode) {
-        if (mode === 'custom') {
-          showCustomRangeDialog((up, down) => { customUp = up;
-            customDown = down;
-            relationViewMode = 'custom';
-            updateViewModeButtons('custom');
-            switchToRelation(); });
-          return;
-        }
-        relationViewMode = mode;
-        updateViewModeButtons(mode);
-        switchToRelation();
+        if (mode === 'custom') { showCustomRangeDialog((up, down) => { customUp = up; customDown = down; relationViewMode = 'custom'; updateViewModeButtons('custom'); switchToRelation(); }); return; }
+        relationViewMode = mode; updateViewModeButtons(mode); switchToRelation();
       }
 
-      function switchToRelation() {
-        if (currentTab !== 'relation') {
-          currentTab = 'relation';
-          document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-          document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-          document.querySelector('[data-tab="relation"]').classList.add('active');
-          document.getElementById('tab-relation').classList.add('active');
-        }
-        refreshDetailView();
-      }
+      function switchToRelation() { if (currentTab !== 'relation') { currentTab = 'relation'; document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active')); document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active')); document.querySelector('[data-tab="relation"]').classList.add('active'); document.getElementById('tab-relation').classList.add('active'); } refreshDetailView(); }
 
       function showCustomRangeDialog(callback) {
-        const overlay = document.createElement('div');
-        overlay.className = 'modal-overlay';
-        overlay.innerHTML = `<div class="modal-dialog" style="width:360px;"><div class="modal-header">⚙️ 自定义代数范围</div>
-        <div class="modal-body">
-          <div class="form-group"><label>向上代数 (0-9，0表示查询人自己)</label><input type="number" id="customUpInput" value="${customUp}" min="0" max="9" style="width:100%;padding:8px;"></div>
-          <div class="form-group"><label>向下代数 (0-9，0表示查询人自己)</label><input type="number" id="customDownInput" value="${customDown}" min="0" max="9" style="width:100%;padding:8px;"></div>
-        </div>
-        <div class="modal-footer"><button class="btn-cancel" id="customCancel">取消</button><button class="btn-primary" id="customOk">确定</button></div></div>`;
+        const overlay = document.createElement('div'); overlay.className = 'modal-overlay';
+        overlay.innerHTML = `<div class="modal-dialog" style="width:360px;"><div class="modal-header">⚙️ 自定义代数范围</div><div class="modal-body"><div class="form-group"><label>向上代数 (0-9，0表示查询人自己)</label><input type="number" id="customUpInput" value="${customUp}" min="0" max="9" style="width:100%;padding:8px;"></div><div class="form-group"><label>向下代数 (0-9，0表示查询人自己)</label><input type="number" id="customDownInput" value="${customDown}" min="0" max="9" style="width:100%;padding:8px;"></div></div><div class="modal-footer"><button class="btn-cancel" id="customCancel">取消</button><button class="btn-primary" id="customOk">确定</button></div></div>`;
         document.body.appendChild(overlay);
         document.getElementById('customCancel').onclick = () => overlay.remove();
-        document.getElementById('customOk').onclick = () => { let up = parseInt(document.getElementById('customUpInput')
-            .value); let down = parseInt(document.getElementById('customDownInput').value);
-          if (isNaN(up) || up < 0) up = 0;
-          if (isNaN(down) || down < 0) down = 0;
-          up = Math.min(9, Math.max(0, up));
-          down = Math.min(9, Math.max(0, down));
-          overlay.remove();
-          callback(up, down); };
+        document.getElementById('customOk').onclick = () => { let up = parseInt(document.getElementById('customUpInput').value); let down = parseInt(document.getElementById('customDownInput').value); if (isNaN(up) || up < 0) up = 0; if (isNaN(down) || down < 0) down = 0; up = Math.min(9, Math.max(0, up)); down = Math.min(9, Math.max(0, down)); overlay.remove(); callback(up, down); };
       }
 
       function renderOrgChart(node) {
         document.getElementById('detailTitle').textContent = node ? '🏢 ' + node.name : '请选择一个成员';
-        if (node && !node.isRoot) {
-          const path = getNodePath(node);
-          document.getElementById('detailPath').textContent = '代际: ' + path.join(' > ');
-        } else {
-          document.getElementById('detailPath').textContent = '';
-        }
-        const orgTree = document.getElementById('orgTree'),
-          empty = document.getElementById('relationEmpty');
-        orgTree.innerHTML = '';
-        orgTree.style.display = 'none';
-        empty.style.display = 'flex';
+        if (node && !node.isRoot) { const path = getNodePath(node); document.getElementById('detailPath').textContent = '代际: ' + path.join(' > '); }
+        else { document.getElementById('detailPath').textContent = ''; }
+        const orgTree = document.getElementById('orgTree'), empty = document.getElementById('relationEmpty');
+        orgTree.innerHTML = ''; orgTree.style.display = 'none'; empty.style.display = 'flex';
         if (!node || node.isRoot) return;
+        const root = getCurrentRoot();
         let maleNode = node;
-        if (!isMale(maleNode)) { const p = findParentNode(familyData, maleNode.id); if (p && !p.isRoot && isMale(p))
-            maleNode = p;
-          else return; }
+        if (!isMale(maleNode)) { const p = findParentNode(root, maleNode.id); if (p && !p.isRoot && isMale(p)) maleNode = p; else return; }
         let treeData = null;
-        if (relationViewMode === 'siblings') { const parent = findParentNode(familyData, maleNode.id); const siblings =
-            parent && !parent.isRoot ? parent.children.filter(c => isMale(c)) : [maleNode]; const sorted =
-            sortByBirthDateDesc([...siblings]);
-          treeData = { node: sorted.find(s => s.id === maleNode.id) || maleNode, siblings: sorted.filter(s => s.id !==
-              maleNode.id) }; } else if (relationViewMode === 'two' || relationViewMode === 'custom') { const up =
-            relationViewMode === 'two' ? 2 : customUp; const down = relationViewMode === 'two' ? 2 : customDown;
-          let ancestors = [];
-          let cur = maleNode;
-          if (up > 0) {
-            for (let i = 0; i < up; i++) { const p = findParentNode(familyData, cur.id); if (!p || p.isRoot) break; if (isMale(
-                p)) { ancestors.unshift(p);
-                cur = p; } else break; }
-          }
-
-          function buildDescendant(n, depth) { 
-            const f = { node: n, children: [] }; 
-            if (down === 0 && depth === 0) {
-              return f;
-            }
-            if (depth < down && n.children) { const
-                maleChildren = n.children.filter(c => isMale(c)); const sortedChildren = sortByBirthDateDesc(maleChildren);
-                sortedChildren.forEach(c => f.children.push(buildDescendant(c, depth + 1))); } 
-            return f; 
-          }
-          
-          if (down === 0) {
-            const rootDesc = { node: maleNode, children: [] };
-            if (ancestors.length > 0) { let root = ancestors[0];
-              let prev = null;
-              ancestors.forEach(anc => { const obj = { node: anc, children: [] }; if (prev) prev.children.push(obj);
-                else root = obj;
-                prev = obj; });
-              prev.children.push(rootDesc);
-              treeData = root; } else treeData = rootDesc;
-          } else {
-            const rootDesc = buildDescendant(maleNode, 0);
-            if (ancestors.length > 0) { let root = ancestors[0];
-              let prev = null;
-              ancestors.forEach(anc => { const obj = { node: anc, children: [] }; if (prev) prev.children.push(obj);
-                else root = obj;
-                prev = obj; });
-              prev.children.push(rootDesc);
-              treeData = root; } else treeData = rootDesc;
-          }
+        if (relationViewMode === 'siblings') { const parent = findParentNode(root, maleNode.id); const siblings = parent && !parent.isRoot ? parent.children.filter(c => isMale(c)) : [maleNode]; const sorted = sortByBirthDateDesc([...siblings]); treeData = { node: sorted.find(s => s.id === maleNode.id) || maleNode, siblings: sorted.filter(s => s.id !== maleNode.id) }; }
+        else if (relationViewMode === 'two' || relationViewMode === 'custom') {
+          const up = relationViewMode === 'two' ? 2 : customUp; const down = relationViewMode === 'two' ? 2 : customDown;
+          let ancestors = []; let cur = maleNode;
+          if (up > 0) { for (let i = 0; i < up; i++) { const p = findParentNode(root, cur.id); if (!p || p.isRoot) break; if (isMale(p)) { ancestors.unshift(p); cur = p; } else break; } }
+          function buildDescendant(n, depth) { const f = { node: n, children: [] }; if (down === 0 && depth === 0) return f; if (depth < down && n.children) { const maleChildren = n.children.filter(c => isMale(c)); const sortedChildren = sortByBirthDateDesc(maleChildren); sortedChildren.forEach(c => f.children.push(buildDescendant(c, depth + 1))); } return f; }
+          if (down === 0) { const rootDesc = { node: maleNode, children: [] }; if (ancestors.length > 0) { let rootNode = ancestors[0]; let prev = null; ancestors.forEach(anc => { const obj = { node: anc, children: [] }; if (prev) prev.children.push(obj); else rootNode = obj; prev = obj; }); prev.children.push(rootDesc); treeData = rootNode; } else treeData = rootDesc; }
+          else { const rootDesc = buildDescendant(maleNode, 0); if (ancestors.length > 0) { let rootNode = ancestors[0]; let prev = null; ancestors.forEach(anc => { const obj = { node: anc, children: [] }; if (prev) prev.children.push(obj); else rootNode = obj; prev = obj; }); prev.children.push(rootDesc); treeData = rootNode; } else treeData = rootDesc; }
         } else {
-          function buildFull(n) { const f = { node: n, children: [] }; if (n.children) { const sorted =
-              sortByBirthDateDesc(n.children.filter(c => isMale(c)));
-              sorted.forEach(c => f.children.push(buildFull(c))); } return f; }
-          let anc = maleNode;
-          while (true) { const p = findParentNode(familyData, anc.id); if (p && !p.isRoot && isMale(p)) anc = p;
-            else break; }
+          function buildFull(n) { const f = { node: n, children: [] }; if (n.children) { const sorted = sortByBirthDateDesc(n.children.filter(c => isMale(c))); sorted.forEach(c => f.children.push(buildFull(c))); } return f; }
+          let anc = maleNode; while (true) { const p = findParentNode(root, anc.id); if (p && !p.isRoot && isMale(p)) anc = p; else break; }
           treeData = buildFull(anc);
         }
         if (!treeData) return;
-        empty.style.display = 'none';
-        orgTree.style.display = 'inline-flex';
-        orgTree.style.transform = `scale(${currentScale})`;
-
-        function createCard(nObj, isSelf, isSpouse = false) {
-          const card = document.createElement('div');
-          card.className = 'org-node';
-          if (isSpouse) card.classList.add('node-spouse');
-          else if (isSelf) card.classList.add('node-self');
-          else card.classList.add('node-other');
-          card.innerHTML = `<span class="node-name">${escapeHtml(nObj.name)}</span><span class="node-years">${getAttr(nObj,'出生日期')||''}</span>`;
-          card.onclick = () => { selectNode(nObj.id);
-            switchTab('relation'); };
-          return card;
-        }
-
+        empty.style.display = 'none'; orgTree.style.display = 'inline-flex'; orgTree.style.transform = `scale(${currentScale})`;
+        function createCard(nObj, isSelf, isSpouse = false) { const card = document.createElement('div'); card.className = 'org-node'; if (isSpouse) card.classList.add('node-spouse'); else if (isSelf) card.classList.add('node-self'); else card.classList.add('node-other'); card.innerHTML = `<span class="node-name">${escapeHtml(nObj.name)}</span><span class="node-years">${getAttr(nObj,'出生日期')||''}</span>`; card.onclick = () => { selectNode(nObj.id); switchTab('relation'); }; return card; }
         function renderNode(tn, container, isSelf) {
-          if (tn.siblings !== undefined) {
-            const allNodes = [tn.node, ...tn.siblings];
-            const row = document.createElement('div');
-            row.className = 'sibling-row';
-            allNodes.forEach(s => {
-              const spouseName = getAttr(s, '配偶');
-              if (spouseName) {
-                const pair = document.createElement('div');
-                pair.className = 'spouse-pair';
-                pair.style.display = 'flex';
-                pair.style.alignItems = 'center';
-                pair.style.gap = '4px';
-                pair.appendChild(createCard(s, s.id === maleNode.id, false));
-                const spouseCard = document.createElement('div');
-                spouseCard.className = 'org-node node-spouse';
-                spouseCard.innerHTML = `<span class="node-name">${escapeHtml(spouseName)}</span><span class="node-years">配偶</span>`;
-                spouseCard.onclick = () => { selectNode(s.id); switchTab('relation'); };
-                pair.appendChild(spouseCard);
-                row.appendChild(pair);
-              } else {
-                row.appendChild(createCard(s, s.id === maleNode.id, false));
-              }
-            });
-            container.appendChild(row);
-            return;
-          }
-          const branch = document.createElement('div');
-          branch.className = 'org-branch';
+          if (tn.siblings !== undefined) { const allNodes = [tn.node, ...tn.siblings]; const row = document.createElement('div'); row.className = 'sibling-row'; allNodes.forEach(s => { const spouseName = getAttr(s, '配偶'); if (spouseName) { const pair = document.createElement('div'); pair.className = 'spouse-pair'; pair.style.display = 'flex'; pair.style.alignItems = 'center'; pair.style.gap = '4px'; pair.appendChild(createCard(s, s.id === maleNode.id, false)); const spouseCard = document.createElement('div'); spouseCard.className = 'org-node node-spouse'; spouseCard.innerHTML = `<span class="node-name">${escapeHtml(spouseName)}</span><span class="node-years">配偶</span>`; spouseCard.onclick = () => { selectNode(s.id); switchTab('relation'); }; pair.appendChild(spouseCard); row.appendChild(pair); } else { row.appendChild(createCard(s, s.id === maleNode.id, false)); } }); container.appendChild(row); return; }
+          const branch = document.createElement('div'); branch.className = 'org-branch';
           const spouseName = getAttr(tn.node, '配偶');
-          if (spouseName) {
-            const pair = document.createElement('div');
-            pair.className = 'spouse-pair';
-            pair.style.display = 'flex';
-            pair.style.alignItems = 'center';
-            pair.style.gap = '4px';
-            pair.style.position = 'relative';
-            pair.appendChild(createCard(tn.node, isSelf, false));
-            const spouseCard = document.createElement('div');
-            spouseCard.className = 'org-node node-spouse';
-            spouseCard.innerHTML = `<span class="node-name">${escapeHtml(spouseName)}</span><span class="node-years">配偶</span>`;
-            spouseCard.onclick = () => { selectNode(tn.node.id); switchTab('relation'); };
-            pair.appendChild(spouseCard);
-            branch.appendChild(pair);
-            if (tn.children && tn.children.length) {
-              pair.classList.add('has-children');
-            }
-          } else {
-            const card = createCard(tn.node, isSelf, false);
-            if (tn.children && tn.children.length) card.classList.add('has-children');
-            branch.appendChild(card);
-          }
-          if (tn.children && tn.children.length) {
-            const chDiv = document.createElement('div');
-            chDiv.className = 'org-children' + (tn.children.length > 1 ? ' multiple' : '');
-            tn.children.forEach(ch => renderNode(ch, chDiv, ch.node.id === maleNode.id));
-            branch.appendChild(chDiv);
-          }
+          if (spouseName) { const pair = document.createElement('div'); pair.className = 'spouse-pair'; pair.style.display = 'flex'; pair.style.alignItems = 'center'; pair.style.gap = '4px'; pair.style.position = 'relative'; pair.appendChild(createCard(tn.node, isSelf, false)); const spouseCard = document.createElement('div'); spouseCard.className = 'org-node node-spouse'; spouseCard.innerHTML = `<span class="node-name">${escapeHtml(spouseName)}</span><span class="node-years">配偶</span>`; spouseCard.onclick = () => { selectNode(tn.node.id); switchTab('relation'); }; pair.appendChild(spouseCard); branch.appendChild(pair); if (tn.children && tn.children.length) { pair.classList.add('has-children'); } }
+          else { const card = createCard(tn.node, isSelf, false); if (tn.children && tn.children.length) card.classList.add('has-children'); branch.appendChild(card); }
+          if (tn.children && tn.children.length) { const chDiv = document.createElement('div'); chDiv.className = 'org-children' + (tn.children.length > 1 ? ' multiple' : ''); tn.children.forEach(ch => renderNode(ch, chDiv, ch.node.id === maleNode.id)); branch.appendChild(chDiv); }
           container.appendChild(branch);
         }
-        orgTree.innerHTML = '';
-        renderNode(treeData, orgTree, treeData.node.id === maleNode.id);
+        orgTree.innerHTML = ''; renderNode(treeData, orgTree, treeData.node.id === maleNode.id);
       }
 
-      function switchTab(tab) {
-        currentTab = tab;
-        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-        document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-        document.querySelector(`[data-tab="${tab}"]`).classList.add('active');
-        document.getElementById('tab-' + tab).classList.add('active');
-        if (tab === 'relation') updateViewModeButtons(relationViewMode);
-        refreshDetailView();
-      }
-
+      function switchTab(tab) { currentTab = tab; document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active')); document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active')); document.querySelector(`[data-tab="${tab}"]`).classList.add('active'); document.getElementById('tab-' + tab).classList.add('active'); if (tab === 'relation') updateViewModeButtons(relationViewMode); refreshDetailView(); }
       function applyScale() { document.getElementById('orgTree').style.transform = `scale(${currentScale})`; }
-
-      function zoomIn() { autoFitEnabled = false;
-        currentScale = Math.min(3, currentScale + 0.2);
-        applyScale();
-        updateZoomButtons(); }
-
-      function zoomOut() { autoFitEnabled = false;
-        currentScale = Math.max(0.2, currentScale - 0.2);
-        applyScale();
-        updateZoomButtons(); }
-
-      function zoomReset() { autoFitEnabled = false;
-        currentScale = 1;
-        applyScale();
-        updateZoomButtons(); }
-
-      function zoomToFit() { const t = document.getElementById('orgTree'),
-          c = document.getElementById('orgChartContainer'); if (!t || !c) return;
-        currentScale = Math.min(1, (c.clientWidth - 40) / t.scrollWidth);
-        autoFitEnabled = true;
-        applyScale();
-        updateZoomButtons(); }
+      function zoomIn() { autoFitEnabled = false; currentScale = Math.min(3, currentScale + 0.2); applyScale(); updateZoomButtons(); }
+      function zoomOut() { autoFitEnabled = false; currentScale = Math.max(0.2, currentScale - 0.2); applyScale(); updateZoomButtons(); }
+      function zoomReset() { autoFitEnabled = false; currentScale = 1; applyScale(); updateZoomButtons(); }
+      function zoomToFit() { const t = document.getElementById('orgTree'), c = document.getElementById('orgChartContainer'); if (!t || !c) return; currentScale = Math.min(1, (c.clientWidth - 40) / t.scrollWidth); autoFitEnabled = true; applyScale(); updateZoomButtons(); }
 
       function exportChartImage() {
-        const orgTree = document.getElementById('orgTree');
-        const container = document.getElementById('orgChartContainer');
+        const orgTree = document.getElementById('orgTree'), container = document.getElementById('orgChartContainer');
         if (!orgTree || !container) return;
-        
-        // 保存原始状态
-        const prevTransform = orgTree.style.transform;
-        const prevOverflow = container.style.overflow;
-        const prevWidth = container.style.width;
-        const prevHeight = container.style.height;
-        
-        // 计算完整尺寸
-        const fullWidth = orgTree.scrollWidth + 60;
-        const fullHeight = orgTree.scrollHeight + 60;
-        
-        // 临时修改为完整尺寸
-        orgTree.style.transform = 'scale(1)';
-        container.style.overflow = 'visible';
-        container.style.width = fullWidth + 'px';
-        container.style.height = fullHeight + 'px';
-        
-        // 移除所有节点的box-shadow以避免黑块
-        const allNodes = container.querySelectorAll('.org-node');
-        const originalBoxShadows = [];
-        allNodes.forEach(node => {
-          originalBoxShadows.push({
-            node: node,
-            boxShadow: node.style.boxShadow
-          });
-          node.style.boxShadow = 'none';
-        });
-
-        html2canvas(container, {
-          backgroundColor: '#ffffff',
-          scale: 2,
-          allowTaint: false,
-          useCORS: true,
-          logging: false,
-          width: fullWidth,
-          height: fullHeight,
-          windowWidth: fullWidth,
-          windowHeight: fullHeight,
-          onclone: function(clonedDoc) {
-            const clonedContainer = clonedDoc.getElementById('orgChartContainer');
-            if (clonedContainer) {
-              clonedContainer.style.overflow = 'visible';
-              clonedContainer.style.width = fullWidth + 'px';
-              clonedContainer.style.height = fullHeight + 'px';
-              clonedContainer.style.background = '#ffffff';
-              
-              const clonedTree = clonedDoc.getElementById('orgTree');
-              if (clonedTree) {
-                clonedTree.style.transform = 'scale(1)';
-                clonedTree.style.background = '#ffffff';
-              }
-              
-              const clonedNodes = clonedContainer.querySelectorAll('.org-node');
-              clonedNodes.forEach(n => {
-                n.style.boxShadow = 'none';
-              });
-            }
-          }
-        }).then(canvas => {
-          // 恢复原始状态
-          orgTree.style.transform = prevTransform;
-          container.style.overflow = prevOverflow;
-          container.style.width = prevWidth;
-          container.style.height = prevHeight;
-          
-          // 恢复所有节点的box-shadow
-          originalBoxShadows.forEach(item => {
-            item.node.style.boxShadow = item.boxShadow;
-          });
-          
-          const link = document.createElement('a');
-          link.download = '辈分关系图.png';
-          link.href = canvas.toDataURL('image/png');
-          link.click();
-        }).catch(err => {
-          // 恢复原始状态
-          orgTree.style.transform = prevTransform;
-          container.style.overflow = prevOverflow;
-          container.style.width = prevWidth;
-          container.style.height = prevHeight;
-          
-          // 恢复所有节点的box-shadow
-          originalBoxShadows.forEach(item => {
-            item.node.style.boxShadow = item.boxShadow;
-          });
-          
-          alert('导出图片失败：' + err);
-        });
+        const prevTransform = orgTree.style.transform, prevOverflow = container.style.overflow, prevWidth = container.style.width, prevHeight = container.style.height;
+        const fullWidth = orgTree.scrollWidth + 60, fullHeight = orgTree.scrollHeight + 60;
+        orgTree.style.transform = 'scale(1)'; container.style.overflow = 'visible'; container.style.width = fullWidth + 'px'; container.style.height = fullHeight + 'px';
+        const allNodes = container.querySelectorAll('.org-node'); const originalBoxShadows = []; allNodes.forEach(node => { originalBoxShadows.push({ node, boxShadow: node.style.boxShadow }); node.style.boxShadow = 'none'; });
+        html2canvas(container, { backgroundColor: '#ffffff', scale: 2, allowTaint: false, useCORS: true, logging: false, width: fullWidth, height: fullHeight, windowWidth: fullWidth, windowHeight: fullHeight, onclone: function(clonedDoc) { const clonedContainer = clonedDoc.getElementById('orgChartContainer'); if (clonedContainer) { clonedContainer.style.overflow = 'visible'; clonedContainer.style.width = fullWidth + 'px'; clonedContainer.style.height = fullHeight + 'px'; clonedContainer.style.background = '#ffffff'; const clonedTree = clonedDoc.getElementById('orgTree'); if (clonedTree) { clonedTree.style.transform = 'scale(1)'; clonedTree.style.background = '#ffffff'; } const clonedNodes = clonedContainer.querySelectorAll('.org-node'); clonedNodes.forEach(n => { n.style.boxShadow = 'none'; }); } } }).then(canvas => { orgTree.style.transform = prevTransform; container.style.overflow = prevOverflow; container.style.width = prevWidth; container.style.height = prevHeight; originalBoxShadows.forEach(item => { item.node.style.boxShadow = item.boxShadow; }); const link = document.createElement('a'); link.download = '辈分关系图.png'; link.href = canvas.toDataURL('image/png'); link.click(); }).catch(err => { orgTree.style.transform = prevTransform; container.style.overflow = prevOverflow; container.style.width = prevWidth; container.style.height = prevHeight; originalBoxShadows.forEach(item => { item.node.style.boxShadow = item.boxShadow; }); alert('导出图片失败：' + err); });
       }
 
-      function showUndoBar(deletedNode, parentNode) { const existing = document.querySelector('.undo-bar'); if (existing)
-          existing.remove(); const bar = document.createElement('div');
-        bar.className = 'undo-bar';
-        bar.innerHTML = `已删除成员「${deletedNode.name}」<button id="undoDeleteBtn">撤销删除 (Ctrl+Z)</button>`;
-        document.getElementById('appWindow').prepend(bar);
-        document.getElementById('undoDeleteBtn').onclick = () => performUndo(bar); }
+      function showUndoBar(deletedNode, parentNode) { const existing = document.querySelector('.undo-bar'); if (existing) existing.remove(); const bar = document.createElement('div'); bar.className = 'undo-bar'; bar.innerHTML = `已删除成员「${deletedNode.name}」<button id="undoDeleteBtn">撤销删除 (Ctrl+Z)</button>`; document.getElementById('appWindow').prepend(bar); document.getElementById('undoDeleteBtn').onclick = () => performUndo(bar); }
+      function performUndo(bar) { if (!pendingDelete) return; const { node, parent } = pendingDelete; if (parent) { parent.children.push(node); } else { const root = getCurrentRoot(); if (root) root.children.push(node); } pendingDelete = null; if (bar) bar.remove(); saveData(); renderTree(); refreshDetailView(); showInfoBar('已撤销删除'); }
+      function showInfoBar(message, duration = 3000) { const existing = document.querySelector('.info-bar'); if (existing) existing.remove(); const bar = document.createElement('div'); bar.className = 'info-bar'; bar.innerHTML = `${message}<button onclick="this.parentElement.remove()">✕</button>`; document.getElementById('appWindow').prepend(bar); if (duration > 0) setTimeout(() => { if (bar.parentNode) bar.remove(); }, duration); }
 
-      function performUndo(bar) { if (!pendingDelete) return; const { node, parent } = pendingDelete; if (parent) { parent
-          .children.push(node); } else { familyData.children.push(node); }
-        pendingDelete = null; if (bar) bar.remove();
-        saveData();
-        renderTree();
-        refreshDetailView();
-        showInfoBar('已撤销删除'); }
-
-      function showInfoBar(message, duration = 3000) { const existing = document.querySelector('.info-bar'); if (existing)
-          existing.remove(); const bar = document.createElement('div');
-        bar.className = 'info-bar';
-        bar.innerHTML = `${message}<button onclick="this.parentElement.remove()">✕</button>`;
-        document.getElementById('appWindow').prepend(bar); if (duration > 0) setTimeout(() => { if (bar.parentNode) bar
-            .remove(); }, duration); }
-
-      function deleteSelectedMember(id) { const nid = id || selectedNodeId; if (!nid) return; const node = findNodeById(
-          familyData, nid); if (!node || node.isRoot) return; if (confirm(`确定删除「${node.name}」及其后代吗？`)) { const parent =
-          findParentNode(familyData, nid); if (parent) { const idx = parent.children.findIndex(c => c.id === nid); if (idx >=
-            0) { const deletedNode = parent.children.splice(idx, 1)[0];
-            pendingDelete = { node: deletedNode, parent: parent }; if (selectedNodeId === nid) selectedNodeId = parent.id;
-            saveData();
-            renderTree();
-            refreshDetailView();
-            showUndoBar(deletedNode, parent); } } } }
+      function deleteSelectedMember(id) {
+        const nid = id || selectedNodeId; if (!nid) return;
+        const root = getCurrentRoot(); if (!root) return;
+        const node = findNodeById(root, nid); if (!node || node.isRoot) return;
+        if (confirm(`确定删除「${node.name}」及其后代吗？`)) {
+          const parent = findParentNode(root, nid);
+          if (parent) { const idx = parent.children.findIndex(c => c.id === nid); if (idx >= 0) { const deletedNode = parent.children.splice(idx, 1)[0]; pendingDelete = { node: deletedNode, parent: parent }; if (selectedNodeId === nid) selectedNodeId = parent.id; saveData(); renderTree(); refreshDetailView(); showUndoBar(deletedNode, parent); } }
+        }
+      }
 
       function openSearchDialog() {
-        const overlay = document.createElement('div');
-        overlay.className = 'modal-overlay';
-        overlay.innerHTML = `
-          <div class="modal-dialog" style="width:450px;">
-            <div class="modal-header">🔍 多关键字搜索成员</div>
-            <div class="modal-body">
-              <div class="form-group"><label>搜索关键字（可输入姓名、性别、出生日期、职业、出生地等，用空格分隔）</label><input type="text" id="searchInput" placeholder="例如：林 男 福建" style="width:100%;padding:8px;"></div>
-            </div>
-            <div class="modal-footer"><button class="btn-cancel" id="searchCancel">取消</button><button class="btn-primary" id="searchOk">搜索</button></div>
-          </div>`;
+        const overlay = document.createElement('div'); overlay.className = 'modal-overlay';
+        overlay.innerHTML = `<div class="modal-dialog" style="width:450px;"><div class="modal-header">🔍 多关键字搜索成员</div><div class="modal-body"><div class="form-group"><label>搜索关键字（可输入姓名、性别、出生日期、职业、出生地等，用空格分隔）</label><input type="text" id="searchInput" placeholder="例如：林 男 福建" style="width:100%;padding:8px;"></div></div><div class="modal-footer"><button class="btn-cancel" id="searchCancel">取消</button><button class="btn-primary" id="searchOk">搜索</button></div></div>`;
         document.body.appendChild(overlay);
         document.getElementById('searchCancel').onclick = () => overlay.remove();
-        document.getElementById('searchOk').onclick = () => {
-          const kw = document.getElementById('searchInput').value.trim();
-          overlay.remove();
-          if (kw) searchMember(kw);
-        };
+        document.getElementById('searchOk').onclick = () => { const kw = document.getElementById('searchInput').value.trim(); overlay.remove(); if (kw) searchMember(kw); };
       }
 
       function searchMember(keyword) {
         const keywords = keyword.split(/\s+/).filter(k => k.length > 0);
-        if (keywords.length === 0) {
-          alert('请输入搜索关键字');
-          return;
-        }
+        if (keywords.length === 0) { alert('请输入搜索关键字'); return; }
         const results = [];
-
-        function matchNode(node) {
-          if (node.isRoot) return false;
-          const searchText = [
-            node.name || '',
-            ...(node.attributes ? node.attributes.map(a => a.value || '') : [])
-          ].join(' ').toLowerCase();
-          return keywords.every(kw => searchText.includes(kw.toLowerCase()));
-        }
-
-        function s(n, path) {
-          if (matchNode(n)) results.push({ node: n, path });
-          if (n.children) n.children.forEach(c => s(c, [...path, n.name]));
-        }
-        s(familyData, []);
-        if (!results.length) {
-          alert('未找到匹配的成员');
-          return;
-        }
-        if (results.length === 1) {
-          const t = results[0].node;
-          let p = t;
-          while (p) { const par = findParentNode(familyData, p.id); if (par) expandedNodeIds.add(par.id);
-            p = par; }
-          expandedNodeIds.add(t.id);
-          selectNode(t.id);
-          switchTab('properties');
-        } else {
-          const overlay = document.createElement('div');
-          overlay.className = 'modal-overlay';
-          overlay.innerHTML = `
-            <div class="modal-dialog">
-              <div class="modal-header">找到 ${results.length} 位成员</div>
-              <div class="modal-body">
-                ${results.map(r => `<div style="padding:8px;cursor:pointer;border-bottom:1px solid #eee;" data-id="${r.node.id}">${escapeHtml(r.node.name)} <span style="color:#888;font-size:11px;">${r.path.join(' > ')}</span></div>`).join('')}
-              </div>
-              <div class="modal-footer"><button class="btn-cancel">取消</button></div>
-            </div>`;
-          document.body.appendChild(overlay);
-          overlay.querySelector('.btn-cancel').onclick = () => overlay.remove();
-          overlay.querySelectorAll('[data-id]').forEach(el => el.addEventListener('click', () => {
-            const id = el.dataset.id;
-            overlay.remove();
-            const node = findNodeById(familyData, id);
-            if (node) {
-              let p = node;
-              while (p) { const par = findParentNode(familyData, p.id); if (par) expandedNodeIds.add(par.id);
-                p = par; }
-              expandedNodeIds.add(node.id);
-              selectNode(node.id);
-              switchTab('properties');
-            }
-          }));
-        }
+        const root = getCurrentRoot();
+        if (!root) return;
+        function matchNode(node) { if (node.isRoot) return false; const searchText = [node.name || '', ...(node.attributes ? node.attributes.map(a => a.value || '') : [])].join(' ').toLowerCase(); return keywords.every(kw => searchText.includes(kw.toLowerCase())); }
+        function s(n, path) { if (matchNode(n)) results.push({ node: n, path }); if (n.children) n.children.forEach(c => s(c, [...path, n.name])); }
+        s(root, []);
+        if (!results.length) { alert('未找到匹配的成员'); return; }
+        if (results.length === 1) { const t = results[0].node; let p = t; while (p) { const par = findParentNode(root, p.id); if (par) expandedNodeIds.add(par.id); p = par; } expandedNodeIds.add(t.id); selectNode(t.id); switchTab('properties'); }
+        else { const overlay = document.createElement('div'); overlay.className = 'modal-overlay'; overlay.innerHTML = `<div class="modal-dialog"><div class="modal-header">找到 ${results.length} 位成员</div><div class="modal-body">${results.map(r => `<div style="padding:8px;cursor:pointer;border-bottom:1px solid #eee;" data-id="${r.node.id}">${escapeHtml(r.node.name)} <span style="color:#888;font-size:11px;">${r.path.join(' > ')}</span></div>`).join('')}</div><div class="modal-footer"><button class="btn-cancel">取消</button></div></div>`; document.body.appendChild(overlay); overlay.querySelector('.btn-cancel').onclick = () => overlay.remove(); overlay.querySelectorAll('[data-id]').forEach(el => el.addEventListener('click', () => { const id = el.dataset.id; overlay.remove(); const node = findNodeById(root, id); if (node) { let p = node; while (p) { const par = findParentNode(root, p.id); if (par) expandedNodeIds.add(par.id); p = par; } expandedNodeIds.add(node.id); selectNode(node.id); switchTab('properties'); } })); }
       }
 
       function showMemberDialog(existing, parent) {
         const isEdit = !!existing;
-        const node = existing || { name: '', attributes: [{ name: '性别', value: '男' }, { name: '出生日期', value: '' }, { name: '配偶',
-            value: '' }, { name: '出生地', value: '' }, { name: '备注', value: '' }] };
-        const overlay = document.createElement('div');
-        overlay.className = 'modal-overlay';
-        overlay.innerHTML = `<div class="modal-dialog"><div class="modal-header">${isEdit?'✏️ 编辑':'➕ 添加'}成员</div>
-        <div class="modal-body">
-          <div class="form-group"><label>姓名 *</label><input type="text" id="dName" value="${escapeHtml(node.name)}" style="width:100%;padding:8px;"></div>
-          <div class="form-row" style="display:flex;gap:10px;"><div class="form-group" style="flex:1;"><label>性别</label><select id="dGender" style="width:100%;padding:8px;"><option value="男" ${getAttr(node,'性别')==='男'?'selected':''}>男</option><option value="女" ${getAttr(node,'性别')==='女'?'selected':''}>女</option></select></div><div class="form-group" style="flex:1;"><label>出生日期</label><input type="date" id="dBirth" value="${getAttr(node,'出生日期')}" style="width:100%;padding:8px;"></div></div>
-          <div class="form-group"><label>配偶</label><input type="text" id="dSpouse" value="${escapeHtml(getAttr(node,'配偶'))}" style="width:100%;padding:8px;"></div>
-          <div class="form-group"><label>出生地</label><input type="text" id="dPlace" value="${escapeHtml(getAttr(node,'出生地'))}" style="width:100%;padding:8px;"></div>
-          <div class="form-group"><label>备注</label><input type="text" id="dNote" value="${escapeHtml(getAttr(node,'备注'))}" style="width:100%;padding:8px;"></div>
-        </div>
-        <div class="modal-footer"><button class="btn-cancel" id="dCancel">取消</button><button class="btn-primary" id="dOk">${isEdit?'保存':'添加'}</button></div></div>`;
+        const node = existing || { name: '', attributes: [{ name: '性别', value: '男' }, { name: '出生日期', value: '' }, { name: '配偶', value: '' }, { name: '出生地', value: '' }, { name: '备注', value: '' }] };
+        const overlay = document.createElement('div'); overlay.className = 'modal-overlay';
+        overlay.innerHTML = `<div class="modal-dialog"><div class="modal-header">${isEdit?'✏️ 编辑':'➕ 添加'}成员</div><div class="modal-body"><div class="form-group"><label>姓名 *</label><input type="text" id="dName" value="${escapeHtml(node.name)}" style="width:100%;padding:8px;"></div><div class="form-row" style="display:flex;gap:10px;"><div class="form-group" style="flex:1;"><label>性别</label><select id="dGender" style="width:100%;padding:8px;"><option value="男" ${getAttr(node,'性别')==='男'?'selected':''}>男</option><option value="女" ${getAttr(node,'性别')==='女'?'selected':''}>女</option></select></div><div class="form-group" style="flex:1;"><label>出生日期</label><input type="date" id="dBirth" value="${getAttr(node,'出生日期')}" style="width:100%;padding:8px;"></div></div><div class="form-group"><label>配偶</label><input type="text" id="dSpouse" value="${escapeHtml(getAttr(node,'配偶'))}" style="width:100%;padding:8px;"></div><div class="form-group"><label>出生地</label><input type="text" id="dPlace" value="${escapeHtml(getAttr(node,'出生地'))}" style="width:100%;padding:8px;"></div><div class="form-group"><label>备注</label><input type="text" id="dNote" value="${escapeHtml(getAttr(node,'备注'))}" style="width:100%;padding:8px;"></div></div><div class="modal-footer"><button class="btn-cancel" id="dCancel">取消</button><button class="btn-primary" id="dOk">${isEdit?'保存':'添加'}</button></div></div>`;
         document.body.appendChild(overlay);
         const close = () => overlay.remove();
         overlay.querySelector('#dCancel').onclick = close;
         overlay.querySelector('#dOk').onclick = () => {
-          const name = overlay.querySelector('#dName').value.trim();
-          if (!name) { alert('请输入姓名'); return; }
-          const birthDate = overlay.querySelector('#dBirth').value.trim();
-          if (birthDate && !isDateValid(birthDate)) { alert('出生日期不能晚于今天，且格式需为YYYY-MM-DD'); return; }
-          const attrs = [{ name: '性别', value: overlay.querySelector('#dGender').value }, { name: '出生日期', value: birthDate },
-            { name: '配偶', value: overlay.querySelector('#dSpouse').value.trim() }, { name: '出生地', value: overlay
-              .querySelector('#dPlace').value.trim() }, { name: '备注', value: overlay.querySelector('#dNote').value.trim() }
-          ];
-          if (isEdit) { existing.name = name;
-            existing.attributes = attrs; } else { const newNode = { id: generateId(), name, attributes: attrs, children: [] };
-            if (parent) { parent.children.push(newNode);
-              expandedNodeIds.add(parent.id);
-              selectedNodeId = newNode.id; } else { familyData.children.push(newNode);
-              selectedNodeId = newNode.id; } }
-          saveData();
-          renderTree();
-          refreshDetailView();
-          close();
+          const name = overlay.querySelector('#dName').value.trim(); if (!name) { alert('请输入姓名'); return; }
+          const birthDate = overlay.querySelector('#dBirth').value.trim(); if (birthDate && !isDateValid(birthDate)) { alert('出生日期不能晚于今天，且格式需为YYYY-MM-DD'); return; }
+          const attrs = [{ name: '性别', value: overlay.querySelector('#dGender').value }, { name: '出生日期', value: birthDate }, { name: '配偶', value: overlay.querySelector('#dSpouse').value.trim() }, { name: '出生地', value: overlay.querySelector('#dPlace').value.trim() }, { name: '备注', value: overlay.querySelector('#dNote').value.trim() }];
+          if (isEdit) { existing.name = name; existing.attributes = attrs; }
+          else { const newNode = { id: generateId(), name, attributes: attrs, children: [] }; if (parent) { parent.children.push(newNode); expandedNodeIds.add(parent.id); selectedNodeId = newNode.id; } else { const root = getCurrentRoot(); if (root) { root.children.push(newNode); selectedNodeId = newNode.id; } } }
+          saveData(); renderTree(); refreshDetailView(); close();
         };
         overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
       }
 
-      function addChildMember(id) { const nid = id || selectedNodeId; if (!nid) return; const n = findNodeById(familyData, nid);
-        if (!n) return;
-        showMemberDialog(null, n); }
+      function addChildMember(id) { const nid = id || selectedNodeId; if (!nid) return; const root = getCurrentRoot(); if (!root) return; const n = findNodeById(root, nid); if (!n) return; showMemberDialog(null, n); }
+      function addSiblingMember(id) { const nid = id || selectedNodeId; if (!nid) return; const root = getCurrentRoot(); if (!root) return; const n = findNodeById(root, nid); if (!n || n.isRoot) return; const p = findParentNode(root, nid); if (!p) return; showMemberDialog(null, p); }
 
-      function addSiblingMember(id) { const nid = id || selectedNodeId; if (!nid) return; const n = findNodeById(familyData,
-          nid); if (!n || n.isRoot) return; const p = findParentNode(familyData, nid); if (!p) return;
-        showMemberDialog(null, p); }
-
-      function showContextMenu(x, y, node) { const menu = document.getElementById('contextMenu');
-        menu.style.left = x + 'px';
-        menu.style.top = y + 'px';
-        menu.classList.add('show'); }
+      function showContextMenu(x, y, node) { const menu = document.getElementById('contextMenu'); menu.style.left = x + 'px'; menu.style.top = y + 'px'; menu.classList.add('show'); }
       document.addEventListener('click', () => document.getElementById('contextMenu').classList.remove('show'));
 
-      function expandAllNodes() {
-        function c(n) { if (n.children && n.children.length) { expandedNodeIds.add(n.id);
-            n.children.forEach(c); } }
-        c(familyData);
-        expandedNodeIds.add(familyData.id);
-        renderTree();
-      }
+      function expandAllNodes() { const root = getCurrentRoot(); if (!root) return; function c(n) { if (n.children && n.children.length) { expandedNodeIds.add(n.id); n.children.forEach(c); } } c(root); expandedNodeIds.add(root.id); renderTree(); }
+      function collapseAllNodes() { expandedNodeIds.clear(); const root = getCurrentRoot(); if (root) expandedNodeIds.add(root.id); renderTree(); }
 
-      function collapseAllNodes() { expandedNodeIds.clear();
-        expandedNodeIds.add(familyData.id);
-        renderTree(); }
-
-      function exportData() { const a = document.createElement('a');
-        a.href = URL.createObjectURL(new Blob([JSON.stringify(familyData, null, 2)]));
+      function exportData() {
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(new Blob([JSON.stringify(appData, null, 2)]));
         a.download = '族谱管理系统.json';
-        a.click(); }
+        a.click();
+      }
 
       function importData() { document.getElementById('fileInput').click(); }
 
-      function handleFileImport(e) { const f = e.target.files[0]; if (!f) return; const r = new FileReader();
-        r.onload = ev => { try { familyData = JSON.parse(ev.target.result); if (!familyData.isRoot) throw new Error();
-            saveData();
-            renderTree();
-            switchTab('properties'); } catch (ex) { alert('文件格式错误'); } };
-        r.readAsText(f); }
+      function handleFileImport(e) {
+        const f = e.target.files[0]; if (!f) return;
+        const r = new FileReader();
+        r.onload = ev => {
+          try {
+            const data = JSON.parse(ev.target.result);
+            if (data.families && Array.isArray(data.families)) {
+              appData = data;
+              appData.families.forEach(f => { if (f.preface === undefined) f.preface = ''; });
+              if (appData.families.length === 0) { const fam = createDefaultFamily(); appData.families.push(fam); appData.currentFamilyId = fam.id; }
+              else if (!appData.currentFamilyId || !appData.families.find(f=>f.id===appData.currentFamilyId)) { appData.currentFamilyId = appData.families[0].id; }
+            } else if (data.isRoot) {
+              const fam = { id: generateId(), name: '导入的家族', root: data, preface: '' };
+              appData = { families: [fam], currentFamilyId: fam.id };
+            } else {
+              throw new Error();
+            }
+            selectedNodeId = null; expandedNodeIds.clear();
+            const root = getCurrentRoot(); if (root) expandedNodeIds.add(root.id);
+            saveData(); renderTree(); refreshDetailView(); updateFamilySelector(); switchTab('properties');
+          } catch (ex) { alert('文件格式错误'); }
+        };
+        r.readAsText(f);
+      }
 
-      function resetAllData() { if (confirm('重置所有数据？')) { familyData = createTestData();
-          saveData();
-          renderTree();
-          switchTab('properties'); } }
+      function resetAllData() {
+        if (confirm('重置所有家族数据？此操作不可恢复！')) {
+          const fam = createDefaultFamily();
+          appData = { families: [fam], currentFamilyId: fam.id };
+          selectedNodeId = null; expandedNodeIds.clear();
+          const root = getCurrentRoot(); if (root) expandedNodeIds.add(root.id);
+          saveData(); renderTree(); refreshDetailView(); updateFamilySelector(); switchTab('properties');
+        }
+      }
 
-      function showHelp() { alert(
-          '族谱管理系统\n- 双击个人信息表格可编辑\n- 子女排序：工具栏"子女排序"\n- 导出完整图片\n- 快捷键：Delete删除，Ctrl+Z撤销\n- Alt+F/E/S 打开菜单\n- 搜索支持多关键字（空格分隔）\n- 自定义范围：上下0-9代，0表示查询人自己'); }
+      function showHelp() {
+        alert(
+          '欢迎使用族谱管理系统 v1.0\n\n' +
+          '本系统用于数字化管理家族族谱，支持多家族、成员信息编辑、辈分关系图浏览与导出。以下按界面区域详细介绍操作方法。\n\n\n' +
+          '1. 标题栏\n显示软件名称和版本号，仅供识别。\n\n' +
+          '2. 菜单栏\n' +
+          '文件\n' +
+          '导出所有家族：将当前所有家族数据导出为一个 JSON 文件，可用于备份或转移。\n' +
+          '导入：从本地选择之前导出的 JSON 文件，覆盖当前全部数据（请谨慎操作）。\n' +
+          '重置全部：清除所有家族数据，恢复为系统初始状态。\n\n' +
+          '编辑\n' +
+          '添加子成员：为当前选中的成员添加一个子女。\n' +
+          '添加兄弟：为当前选中成员添加一个兄弟姐妹（即添加到其父节点下）。\n' +
+          '添加信息：为当前成员增加一个自定义字段（如“职业”“学历”）。\n' +
+          '删除成员：删除当前选中成员及其所有后代（可在弹出的撤销栏中撤销）。\n' +
+          '搜索：弹出搜索对话框，支持多关键字（空格分隔）搜索姓名、性别、出生日期、职业、出生地、配偶姓氏等。\n' +
+          '家族管理：打开家族管理对话框，可新建家族、切换当前家族、重命名家族、删除家族（至少保留一个）。\n' +
+          '帮助：显示简要帮助信息和联系方式。\n\n' +
+          '3. 工具栏\n' +
+          '·家族下拉框：显示当前家族，可点击切换其他家族。\n' +
+          '序言按钮：编辑当前家族的序言（可长文本），保存后生效。\n' +
+          '添加子成员 / 添加兄弟：功能同菜单中的编辑项。\n' +
+          '添加信息 / 删除信息：管理成员的自定义字段。\n' +
+          '删除成员：功能同菜单。\n' +
+          '子女排序：调整当前选中成员的子女在树形目录中的显示顺序（使用上下箭头调整后保存）。\n' +
+          '全部展开 / 全部折叠：展开或折叠树形目录中的所有节点。\n\n' +
+          '4. 树形目录（左侧面板）\n' +
+          '以缩进树展示家族成员结构。点击 ▶ 箭头展开/折叠子节点。\n' +
+          '点击节点名称选中该成员，右侧详情面板会更新。\n' +
+          '右键点击节点弹出上下文菜单，可快速添加子成员、兄弟、信息或删除。\n' +
+          '面板宽度可通过中间分隔条拖动调整（移动端不支持）。\n\n' +
+          '5. 详情面板（右侧）\n' +
+          '分为两个标签页：\n\n' +
+          '（1）个人信息（📋）\n' +
+          '显示选中成员的固定信息：姓名、性别、出生日期、出生地、配偶、子、女。\n' +
+          '子女名称显示为蓝色链接，点击可跳转到该子女。\n' +
+          '双击数据单元格进入编辑状态：性别为下拉选择，日期为日期选择器，姓名为文本框，支持失焦或回车保存。子女字段不可编辑。\n' +
+          '下方列出所有自定义属性，同样可双击编辑。若自定义属性与固定字段同名会被合并到固定区。\n\n' +
+          '（2）辈分关系图（🔗）\n' +
+          '以组织架构图形式展示男性成员的辈分关系（女性成员会自动跳转到其父节点）。\n' +
+          '查看范围：\n' +
+          ' 全图：显示从最早祖先开始的所有男性后代。\n' +
+          '上下各2代：只显示当前成员向上2代和向下2代。\n' +
+          '同辈：只显示当前成员的所有兄弟（同一父母的男性）。\n' +
+          '自定义：可设定向上/向下的代数范围（0-9）。\n' +
+          '缩放控制：\n' +
+          '➕/➖ 放大缩小。\n' +
+          '适应屏幕：自动缩放使图形完全容纳在窗口内。\n' +
+          '原始尺寸：恢复 100% 比例。\n' +
+          '导出图片：将当前关系图完整导出为高清 PNG 图片。\n' +
+          '图例说明不同边框颜色：蓝色为当前选中成员，绿色为其他成员，橙色为配偶。\n\n' +
+          '6. 右键菜单\n' +
+          '在树形目录中右键点击任意成员，可快速添加子成员、兄弟、信息或删除。\n\n' +
+          '7. 快捷键\n' +
+          'Delete：删除当前选中成员（需确认）。\n' +
+          'Ctrl + Z：撤销最近一次删除操作。\n\n' +
+          '8. 状态栏\n' +
+          '显示当前成员所在代际路径以及家族总成员数。\n\n' +
+          '9. 对话框操作\n' +
+          '搜索：输入多个关键字用空格隔开，支持联合查询。若结果唯一直接跳转；若多个结果显示列表，点击即可跳转。\n' +
+          '子女排序：使用对话框中的上下箭头手动调整顺序，点击“保存排序”立即生效。\n' +
+          '家族管理：可新建家族，当前家族旁显示“(当前)”标识，删除按钮在仅剩一个家族时禁用。\n\n\n' +
+          '软件说明\n' +
+          '族谱管理系统 v1.0 是一款面向家庭、宗亲组织设计的族谱数字化工具。它基于网页技术运行，无需安装，在浏览器中打开即可使用。核心目标是以树状结构直观记录家族成员的姓名、性别、出生日期、配偶、出生地等基本信息，并支持用户自定义扩展字段。\n\n' +
+          '主要特性：\n' +
+          '多家族支持：可同时管理多个不同姓氏或分支的家族，数据隔离清晰。\n' +
+          '树形组织：采用父-子层级展示家族脉络，支持无限层级添加。\n' +
+          '灵活信息录入：每位成员除固定属性外，可动态添加职业、学历、生平简介等任意自定义字段。\n' +
+          '辈分关系图：以图形化方式呈现男性成员的传承关系，提供多种代数视图和缩放导出功能，便于打印或分享。\n' +
+          '撤销与确认：删除操作提供撤销机会，重置数据需二次确认，防止误操作。\n' +
+          '操作便捷：支持右键菜单、键盘快捷键（Delete/Ctrl+Z）、双击编辑等高效操作。\n' +
+          '自适应界面：在桌面端提供双面板布局，移动端自动调整为上下结构，响应式友好。\n\n' +
+          '适用场景：\n' +
+          '个人家庭记录直系亲属信息。\n' +
+          '宗亲会编纂小型支系族谱。\n' +
+          '地方志或民俗研究中作为家族数据采集工具。\n\n' +
+          '运行环境：\n' +
+          '现代浏览器（Chrome、Edge、Firefox、Safari 等）。\n\n' +
+          '技术实现：\n' +
+          '纯前端 HTML/CSS/JavaScript，基于树形递归数据结构，结合 html2canvas 库实现图谱截图导出。\n\n' +
+          '版权与联系方式：\n' +
+          '族谱管理系统v1.0版权归林及第所有。本软件仅供个人学习、研究或内部使用，如需用于商业用途，请与作者联系获取授权。未经授权，禁止反向编译、逆向工程或进行其他非法破解行为。\n' +
+          '版权所有©2026  林及第\n' +
+          '联系邮箱：ld-1212@163.com。'
+        );
+      }
 
       function updateStatusBar() {
-        if (selectedNodeId) {
-          const node = findNodeById(familyData, selectedNodeId);
+        const root = getCurrentRoot();
+        const fam = getCurrentFamily();
+        if (selectedNodeId && root) {
+          const node = findNodeById(root, selectedNodeId);
           if (node && !node.isRoot) {
             const path = getNodePath(node);
             document.getElementById('statusPath').textContent = path.join(' > ');
           } else {
-            document.getElementById('statusPath').textContent = '族谱管理系统';
+            document.getElementById('statusPath').textContent = fam ? fam.name : '族谱管理系统';
           }
         } else {
-          document.getElementById('statusPath').textContent = '族谱管理系统';
+          document.getElementById('statusPath').textContent = fam ? fam.name : '族谱管理系统';
         }
-        document.getElementById('statusCount').textContent = '共 ' + countMembers(familyData) + ' 位成员';
+        document.getElementById('statusCount').textContent = '共 ' + (root ? countMembers(root) : 0) + ' 位成员';
       }
 
       document.addEventListener('keydown', function(e) {
         if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
-        if (e.key === 'Delete') { e.preventDefault(); if (selectedNodeId && selectedNodeId !== familyData.id)
-            deleteSelectedMember(); } else if (e.ctrlKey && e.key === 'z') { e.preventDefault(); const undoBtn = document
-            .getElementById('undoDeleteBtn'); if (undoBtn) undoBtn.click(); } else if (e.altKey && e.key === 'f') { e
-            .preventDefault();
-          document.getElementById('dropdownFile').classList.toggle('show'); } else if (e.altKey && e.key === 'e') { e
-            .preventDefault();
-          document.getElementById('dropdownEdit').classList.toggle('show'); } else if (e.altKey && e.key === 's') { e
-            .preventDefault();
-          openSearchDialog(); }
+        if (e.key === 'Delete') { e.preventDefault(); if (selectedNodeId) deleteSelectedMember(); }
+        else if (e.ctrlKey && e.key === 'z') { e.preventDefault(); const undoBtn = document.getElementById('undoDeleteBtn'); if (undoBtn) undoBtn.click(); }
       });
 
       function init() {
         loadData();
-        expandedNodeIds.add(familyData.id);
+        const root = getCurrentRoot();
+        if (root) expandedNodeIds.add(root.id);
         renderTree();
         updateStatusBar();
+        updateFamilySelector();
         document.querySelectorAll('.menu-item[data-menu]').forEach(item => {
           const dd = item.querySelector('.dropdown-menu');
           if (dd) {
-            item.addEventListener('click', function(e) {
-              e.stopPropagation();
-              const wasOpen = dd.classList.contains('show');
-              document.querySelectorAll('.dropdown-menu.show').forEach(m => m.classList.remove('show'));
-              if (!wasOpen) dd.classList.add('show');
-            });
-            dd.addEventListener('click', function(e) {
-              e.stopPropagation();
-              dd.classList.remove('show');
-            });
+            item.addEventListener('click', function(e) { e.stopPropagation(); const wasOpen = dd.classList.contains('show'); document.querySelectorAll('.dropdown-menu.show').forEach(m => m.classList.remove('show')); if (!wasOpen) dd.classList.add('show'); });
+            dd.addEventListener('click', function(e) { e.stopPropagation(); dd.classList.remove('show'); });
           }
         });
-        document.addEventListener('click', function() {
-          document.querySelectorAll('.dropdown-menu.show').forEach(m => m.classList.remove('show'));
-        });
+        document.addEventListener('click', function() { document.querySelectorAll('.dropdown-menu.show').forEach(m => m.classList.remove('show')); });
         updateViewModeButtons('full');
         updateZoomButtons();
         window.setViewMode = setViewMode;
-        window.zoomIn = zoomIn;
-        window.zoomOut = zoomOut;
-        window.zoomToFit = zoomToFit;
-        window.zoomReset = zoomReset;
-        window.exportChartImage = exportChartImage;
-        window.openSortDialog = openSortDialog;
-        window.openSearchDialog = openSearchDialog;
+        window.zoomIn = zoomIn; window.zoomOut = zoomOut; window.zoomToFit = zoomToFit; window.zoomReset = zoomReset;
+        window.exportChartImage = exportChartImage; window.openSortDialog = openSortDialog; window.openSearchDialog = openSearchDialog;
+        window.openFamilyManageDialog = openFamilyManageDialog;
+        window.openPrefaceDialog = openPrefaceDialog;
       }
       init();
-      window.addChildMember = addChildMember;
-      window.addSiblingMember = addSiblingMember;
-      window.deleteSelectedMember = deleteSelectedMember;
-      window.addAttribute = addAttribute;
-      window.deleteAttribute = deleteAttribute;
-      window.expandAllNodes = expandAllNodes;
-      window.collapseAllNodes = collapseAllNodes;
-      window.exportData = exportData;
-      window.importData = importData;
-      window.resetAllData = resetAllData;
-      window.showHelp = showHelp;
-      window.handleFileImport = handleFileImport;
-      window.switchTab = switchTab;
+      window.addChildMember = addChildMember; window.addSiblingMember = addSiblingMember;
+      window.deleteSelectedMember = deleteSelectedMember; window.addAttribute = addAttribute; window.deleteAttribute = deleteAttribute;
+      window.expandAllNodes = expandAllNodes; window.collapseAllNodes = collapseAllNodes;
+      window.exportData = exportData; window.importData = importData; window.resetAllData = resetAllData;
+      window.showHelp = showHelp; window.handleFileImport = handleFileImport; window.switchTab = switchTab;
+      window.switchFamily = switchFamily;
     })();
   </script>
 </body>
