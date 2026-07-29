@@ -858,6 +858,8 @@
         <div class="dropdown-menu" id="dropdownFile">
           <div class="dm-item" onclick="exportData()">📤 导出所有家族</div>
           <div class="dm-item" onclick="importData()">📥 导入</div>
+          <div class="dm-item" onclick="syncToCloud()">☁️ 上传到云端</div>
+          <div class="dm-item" onclick="loadFromCloud()">☁️ 从云端加载</div>
           <div class="dm-item danger" onclick="resetAllData()">🗑️ 重置全部</div>
         </div>
       </div>
@@ -1650,6 +1652,70 @@
         }
       }
 
+      // ==================== 云端同步 ====================
+      const CLOUD_API_URL = 'https://genealogy-management-system.lzy-lcd-forever.workers.dev/api/data';
+
+      async function syncToCloud() {
+        const data = JSON.stringify(appData);
+        showInfoBar('正在上传到云端...', 0);
+        try {
+          const response = await fetch(CLOUD_API_URL, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: data
+          });
+          if (response.ok) {
+            showInfoBar('✅ 上传成功！数据已同步至云端', 3000);
+          } else {
+            const err = await response.json();
+            showInfoBar(`❌ 上传失败: ${err.error}`, 3000);
+          }
+        } catch (e) {
+          showInfoBar(`❌ 网络错误: ${e.message}`, 3000);
+        }
+      }
+
+      async function loadFromCloud() {
+        if (!confirm('从云端加载将覆盖当前所有数据，确定继续吗？')) return;
+        showInfoBar('正在从云端加载...', 0);
+        try {
+          const response = await fetch(CLOUD_API_URL);
+          if (!response.ok) {
+            const err = await response.json();
+            showInfoBar(`❌ 加载失败: ${err.error}`, 3000);
+            return;
+          }
+          const cloudData = await response.json();
+          if (cloudData.families && Array.isArray(cloudData.families)) {
+            appData = cloudData;
+            appData.families.forEach(f => { if (f.preface === undefined) f.preface = ''; });
+            if (appData.families.length === 0) {
+              const fam = createDefaultFamily();
+              appData.families.push(fam);
+              appData.currentFamilyId = fam.id;
+            } else if (!appData.families.find(f => f.id === appData.currentFamilyId)) {
+              appData.currentFamilyId = appData.families[0].id;
+            }
+          } else {
+            showInfoBar('❌ 云端数据格式错误', 3000);
+            return;
+          }
+          selectedNodeId = null;
+          expandedNodeIds.clear();
+          const root = getCurrentRoot();
+          if (root) expandedNodeIds.add(root.id);
+          saveData();
+          renderTree();
+          refreshDetailView();
+          updateFamilySelector();
+          switchTab('properties');
+          showInfoBar('✅ 云端数据加载成功', 3000);
+        } catch (e) {
+          showInfoBar(`❌ 网络错误: ${e.message}`, 3000);
+        }
+      }
+      // ==================== 云端同步结束 ====================
+
       function showHelp() {
         alert(
           '欢迎使用族谱管理系统 v1.0\n\n' +
@@ -1790,6 +1856,8 @@
       window.exportData = exportData; window.importData = importData; window.resetAllData = resetAllData;
       window.showHelp = showHelp; window.handleFileImport = handleFileImport; window.switchTab = switchTab;
       window.switchFamily = switchFamily;
+      window.syncToCloud = syncToCloud;
+      window.loadFromCloud = loadFromCloud;
     })();
   </script>
 </body>
