@@ -3,16 +3,23 @@ export async function onRequest(context) {
   const { request, env, next } = context;
   const url = new URL(request.url);
 
-  // 白名单：允许访问登录页、注册页、静态资源、登录/注册 API
+  // 1. 公开路径（登录、注册、认证接口）
   const publicPaths = ['/login.html', '/register.html', '/api/auth/login', '/api/auth/register'];
-  const isPublic = publicPaths.some(p => url.pathname.startsWith(p)) ||
-                   url.pathname.startsWith('/assets/'); // 如果有静态资源目录
-
-  if (isPublic) {
+  if (publicPaths.some(p => url.pathname.startsWith(p))) {
     return next();
   }
 
-  // 获取 Cookie 中的 token
+  // 2. 带文件扩展名的资源（静态文件），一律放行
+  if (/\.\w+$/.test(url.pathname)) {
+    return next();
+  }
+
+  // 3. 根路径 (主页) 也放行，由 index.html 处理
+  if (url.pathname === '/') {
+    return next();
+  }
+
+  // 4. 其余路径需要认证
   const cookie = request.headers.get('Cookie') || '';
   const tokenMatch = cookie.match(/token=([^;]+)/);
   let valid = false;
@@ -21,31 +28,24 @@ export async function onRequest(context) {
     try {
       const { payload } = await verifyToken(tokenMatch[1], env.JWT_SECRET);
       valid = true;
-    } catch (e) {
-      // token 无效
-    }
+    } catch (e) { /* token 无效 */ }
   }
 
   if (!valid) {
-    // 重定向到登录页，保留原始路径用于登录后跳转
     const redirectUrl = new URL('/login.html', request.url);
     redirectUrl.searchParams.set('redirect', url.pathname + url.search);
     return Response.redirect(redirectUrl.toString(), 302);
   }
 
-  // 认证通过，继续处理请求
   return next();
 }
 
-// JWT 验证函数（使用 Web Crypto API）
+// JWT 验证（与之前相同）
 async function verifyToken(token, secret) {
   const encoder = new TextEncoder();
   const key = await crypto.subtle.importKey(
-    'raw',
-    encoder.encode(secret),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['verify']
+    'raw', encoder.encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' }, false, ['verify']
   );
 
   const parts = token.split('.');
@@ -65,11 +65,10 @@ async function verifyToken(token, secret) {
 }
 
 function base64UrlToArrayBuffer(base64url) {
-  const base64 = base64url.replace(/-/g, '+').replace(/_/g, '/').padEnd(base64url.length + (4 - base64url.length % 4) % 4, '=');
+  const base64 = base64url.replace(/-/g, '+').replace(/_/g, '/')
+    .padEnd(base64url.length + (4 - base64url.length % 4) % 4, '=');
   const binary = atob(base64);
   const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
   return bytes.buffer;
 }
