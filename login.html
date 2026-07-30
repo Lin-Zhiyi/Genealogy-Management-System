@@ -55,7 +55,7 @@
         if (res.ok) {
           const params = new URLSearchParams(window.location.search);
           const redirect = params.get('redirect') || '/';
-          window.location.href = redirect;
+          window.location.replace(redirect);   // 仅修改此处：使用 replace 避免重定向循环
         } else {
           const data = await res.json();
           errorDiv.textContent = data.error || '登录失败';
