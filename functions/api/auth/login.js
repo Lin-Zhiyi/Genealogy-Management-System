@@ -2,7 +2,15 @@
 export async function onRequestPost(context) {
   const { request, env } = context;
 
-  // 1. 解析请求体
+  // 1. 检查必要的环境变量
+  if (!env.JWT_SECRET || env.JWT_SECRET.length < 16) {
+    return new Response(JSON.stringify({ error: '服务器 JWT 密钥未配置或过短' }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+
+  // 2. 解析请求体
   let body;
   try {
     body = await request.json();
@@ -21,7 +29,7 @@ export async function onRequestPost(context) {
     });
   }
 
-  // 2. 从 KV 读取用户数据
+  // 3. 从 KV 读取用户数据
   let userData;
   try {
     userData = await env.USER_KV.get(`user:${username}`);
@@ -39,7 +47,7 @@ export async function onRequestPost(context) {
     });
   }
 
-  // 3. 解析用户数据
+  // 4. 解析用户数据
   let user;
   try {
     user = JSON.parse(userData);
@@ -50,7 +58,7 @@ export async function onRequestPost(context) {
     });
   }
 
-  // 4. 验证密码（格式：盐:哈希）
+  // 5. 验证密码（格式：盐:哈希）
   const parts = user.password.split(':');
   if (parts.length !== 2) {
     return new Response(JSON.stringify({ error: '用户密码格式错误' }), {
@@ -60,7 +68,6 @@ export async function onRequestPost(context) {
   }
   const [salt, storedHash] = parts;
 
-  // 计算 SHA-512(盐 + 输入密码)
   let inputHash;
   try {
     inputHash = await sha512(salt + password);
@@ -78,18 +85,18 @@ export async function onRequestPost(context) {
     });
   }
 
-  // 5. 生成 JWT
+  // 6. 生成 JWT
   let token;
   try {
     token = await generateToken({ username, role: user.role }, env.JWT_SECRET, '24h');
   } catch (e) {
-    return new Response(JSON.stringify({ error: '令牌生成失败' }), {
+    return new Response(JSON.stringify({ error: `令牌生成失败: ${e.message}` }), {
       status: 500,
       headers: { 'Content-Type': 'application/json' }
     });
   }
 
-  // 6. 设置 Cookie 并返回成功
+  // 7. 设置 Cookie 并返回成功
   const headers = new Headers({
     'Content-Type': 'application/json',
     'Set-Cookie': `token=${token}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=86400`
@@ -98,7 +105,7 @@ export async function onRequestPost(context) {
   return new Response(JSON.stringify({ success: true }), { headers });
 }
 
-// ---------- SHA-512 哈希（与注册接口完全一致）----------
+// ---------- SHA-512 哈希 ----------
 async function sha512(message) {
   const encoder = new TextEncoder();
   const data = encoder.encode(message);
@@ -108,7 +115,7 @@ async function sha512(message) {
     .join('');
 }
 
-// ---------- JWT 生成函数（与中间件/me 接口兼容）----------
+// ---------- JWT 生成函数 ----------
 async function generateToken(payload, secret, expiresIn) {
   const header = { alg: 'HS256', typ: 'JWT' };
   const now = Math.floor(Date.now() / 1000);
