@@ -39,6 +39,15 @@
   </div>
 
   <script>
+    // 页面加载时检查 URL 是否包含认证错误原因
+    window.addEventListener('DOMContentLoaded', () => {
+      const params = new URLSearchParams(window.location.search);
+      const error = params.get('error');
+      if (error) {
+        document.getElementById('errorMessage').textContent = `认证失败 (${error})`;
+      }
+    });
+
     document.getElementById('loginForm').addEventListener('submit', async (e) => {
       e.preventDefault();
       const username = document.getElementById('username').value;
@@ -55,7 +64,7 @@
         if (res.ok) {
           const params = new URLSearchParams(window.location.search);
           const redirect = params.get('redirect') || '/';
-          window.location.replace(redirect);   // 仅修改此处：使用 replace 避免重定向循环
+          window.location.replace(redirect);
         } else {
           const data = await res.json();
           errorDiv.textContent = data.error || '登录失败';
