@@ -2,22 +2,22 @@
 export async function onRequestPost(context) {
   const { request, env } = context;
 
-  // 1. 检查必要的环境变量
+  // 检查环境变量
   if (!env.JWT_SECRET || env.JWT_SECRET.length < 16) {
     return new Response(JSON.stringify({ error: '服务器 JWT 密钥未配置或过短' }), {
       status: 500,
-      headers: { 'Content-Type': 'application/json' }
+      headers: { 'Content-Type': 'application/json; charset=utf-8' }
     });
   }
 
-  // 2. 解析请求体
+  // 解析请求体
   let body;
   try {
     body = await request.json();
   } catch {
     return new Response(JSON.stringify({ error: '请求格式错误' }), {
       status: 400,
-      headers: { 'Content-Type': 'application/json' }
+      headers: { 'Content-Type': 'application/json; charset=utf-8' }
     });
   }
 
@@ -25,45 +25,45 @@ export async function onRequestPost(context) {
   if (!username || !password) {
     return new Response(JSON.stringify({ error: '用户名和密码不能为空' }), {
       status: 400,
-      headers: { 'Content-Type': 'application/json' }
+      headers: { 'Content-Type': 'application/json; charset=utf-8' }
     });
   }
 
-  // 3. 从 KV 读取用户数据
+  // 从 KV 读取用户数据
   let userData;
   try {
     userData = await env.USER_KV.get(`user:${username}`);
   } catch (e) {
     return new Response(JSON.stringify({ error: '服务器存储错误' }), {
       status: 500,
-      headers: { 'Content-Type': 'application/json' }
+      headers: { 'Content-Type': 'application/json; charset=utf-8' }
     });
   }
 
   if (!userData) {
     return new Response(JSON.stringify({ error: '用户名或密码错误' }), {
       status: 401,
-      headers: { 'Content-Type': 'application/json' }
+      headers: { 'Content-Type': 'application/json; charset=utf-8' }
     });
   }
 
-  // 4. 解析用户数据
+  // 解析用户数据
   let user;
   try {
     user = JSON.parse(userData);
   } catch {
     return new Response(JSON.stringify({ error: '用户数据损坏' }), {
       status: 500,
-      headers: { 'Content-Type': 'application/json' }
+      headers: { 'Content-Type': 'application/json; charset=utf-8' }
     });
   }
 
-  // 5. 验证密码
+  // 验证密码
   const parts = user.password.split(':');
   if (parts.length !== 2) {
     return new Response(JSON.stringify({ error: '用户密码格式错误' }), {
       status: 500,
-      headers: { 'Content-Type': 'application/json' }
+      headers: { 'Content-Type': 'application/json; charset=utf-8' }
     });
   }
   const [salt, storedHash] = parts;
@@ -74,73 +74,56 @@ export async function onRequestPost(context) {
   } catch (e) {
     return new Response(JSON.stringify({ error: '服务器内部错误' }), {
       status: 500,
-      headers: { 'Content-Type': 'application/json' }
+      headers: { 'Content-Type': 'application/json; charset=utf-8' }
     });
   }
 
   if (inputHash !== storedHash) {
     return new Response(JSON.stringify({ error: '用户名或密码错误' }), {
       status: 401,
-      headers: { 'Content-Type': 'application/json' }
+      headers: { 'Content-Type': 'application/json; charset=utf-8' }
     });
   }
 
-  // 6. 生成 JWT
+  // 生成 JWT（支持任意 Unicode 字符）
   let token;
   try {
     token = await generateToken({ username, role: user.role }, env.JWT_SECRET, '24h');
   } catch (e) {
     return new Response(JSON.stringify({ error: `令牌生成失败: ${e.message}` }), {
       status: 500,
-      headers: { 'Content-Type': 'application/json' }
+      headers: { 'Content-Type': 'application/json; charset=utf-8' }
     });
   }
 
-  // 7. 设置 Cookie 并返回成功
   const headers = new Headers({
-    'Content-Type': 'application/json',
+    'Content-Type': 'application/json; charset=utf-8',
     'Set-Cookie': `token=${token}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=86400`
   });
 
   return new Response(JSON.stringify({ success: true }), { headers });
 }
 
-// ---------- 工具函数 ----------
+// ---------- SHA-512 ----------
 async function sha512(message) {
   const encoder = new TextEncoder();
   const data = encoder.encode(message);
   const hashBuffer = await crypto.subtle.digest('SHA-512', data);
-  return Array.from(new Uint8Array(hashBuffer))
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join('');
+  return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
-// ---------- 安全的 Base64URL 编码（避免 btoa 中文错误）----------
-function base64urlEncode(str) {
-  // 将字符串转换为 UTF-8 字节，再编码为 Base64，然后转为 Base64URL
-  const encoder = new TextEncoder();
-  const bytes = encoder.encode(str);
-  // 使用 btoa 处理每个字节的字符，但需要将字节数组转为字符串（Latin1 逐个转换）
-  let binary = '';
-  for (let i = 0; i < bytes.length; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  const base64 = btoa(binary);
-  return base64.replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
-}
-
-// ---------- JWT 生成函数 ----------
+// ---------- JWT 生成（完全支持 UTF-8）----------
 async function generateToken(payload, secret, expiresIn) {
   const header = { alg: 'HS256', typ: 'JWT' };
   const now = Math.floor(Date.now() / 1000);
   const exp = now + (expiresIn.endsWith('h') ? parseInt(expiresIn) * 3600 : 86400);
   const fullPayload = { ...payload, iat: now, exp };
 
-  const headerB64 = base64urlEncode(JSON.stringify(header));
-  const payloadB64 = base64urlEncode(JSON.stringify(fullPayload));
+  const encoder = new TextEncoder();
+  const headerB64 = base64UrlEncode(encoder.encode(JSON.stringify(header)));
+  const payloadB64 = base64UrlEncode(encoder.encode(JSON.stringify(fullPayload)));
   const data = `${headerB64}.${payloadB64}`;
 
-  const encoder = new TextEncoder();
   const key = await crypto.subtle.importKey(
     'raw',
     encoder.encode(secret),
@@ -149,14 +132,61 @@ async function generateToken(payload, secret, expiresIn) {
     ['sign']
   );
   const signature = await crypto.subtle.sign('HMAC', key, encoder.encode(data));
-  // 将签名数组转为 Base64URL
-  const signatureBytes = new Uint8Array(signature);
-  let sigBinary = '';
-  for (let i = 0; i < signatureBytes.length; i++) {
-    sigBinary += String.fromCharCode(signatureBytes[i]);
-  }
-  const signatureB64 = btoa(sigBinary)
-    .replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+  const signatureB64 = base64UrlEncode(new Uint8Array(signature));
 
   return `${headerB64}.${payloadB64}.${signatureB64}`;
+}
+
+// 将字节数组编码为 Base64URL 字符串
+function base64UrlEncode(buffer) {
+  const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+}
+
+// ---------- JWT 验证（必须与此文件中的编码方式一致）----------
+async function verifyToken(token, secret) {
+  const encoder = new TextEncoder();
+  const parts = token.split('.');
+  if (parts.length !== 3) throw new Error('Invalid token format');
+
+  const [headerB64, payloadB64, signatureB64] = parts;
+  const signature = base64UrlDecode(signatureB64);
+  const data = encoder.encode(`${headerB64}.${payloadB64}`);
+
+  const key = await crypto.subtle.importKey(
+    'raw',
+    encoder.encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['verify']
+  );
+  const valid = await crypto.subtle.verify('HMAC', key, signature, data);
+  if (!valid) throw new Error('Signature invalid');
+
+  // 解码 payload（UTF-8 安全）
+  const payloadBytes = base64UrlDecode(payloadB64);
+  const payloadText = new TextDecoder().decode(payloadBytes);
+  const payload = JSON.parse(payloadText);
+
+  if (payload.exp && payload.exp < Date.now() / 1000) throw new Error('Token expired');
+  return { payload };
+}
+
+// 将 Base64URL 字符串解码为 Uint8Array
+function base64UrlDecode(str) {
+  let base64 = str.replace(/-/g, '+').replace(/_/g, '/');
+  // 补齐长度
+  while (base64.length % 4) {
+    base64 += '=';
+  }
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
 }
