@@ -7,19 +7,19 @@ export async function onRequestGet(context) {
   if (!tokenMatch) {
     return new Response(JSON.stringify({ error: '未登录' }), {
       status: 401,
-      headers: { 'Content-Type': 'application/json' }
+      headers: { 'Content-Type': 'application/json; charset=utf-8' }
     });
   }
 
   try {
     const { payload } = await verifyToken(tokenMatch[1], env.JWT_SECRET);
     return new Response(JSON.stringify({ username: payload.username, role: payload.role }), {
-      headers: { 'Content-Type': 'application/json' }
+      headers: { 'Content-Type': 'application/json; charset=utf-8' }
     });
   } catch (e) {
     return new Response(JSON.stringify({ error: '令牌无效' }), {
       status: 401,
-      headers: { 'Content-Type': 'application/json' }
+      headers: { 'Content-Type': 'application/json; charset=utf-8' }
     });
   }
 }
