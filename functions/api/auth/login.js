@@ -58,7 +58,7 @@ export async function onRequestPost(context) {
     });
   }
 
-  // 5. 验证密码（格式：盐:哈希）
+  // 5. 验证密码
   const parts = user.password.split(':');
   if (parts.length !== 2) {
     return new Response(JSON.stringify({ error: '用户密码格式错误' }), {
@@ -105,7 +105,7 @@ export async function onRequestPost(context) {
   return new Response(JSON.stringify({ success: true }), { headers });
 }
 
-// ---------- SHA-512 哈希 ----------
+// ---------- 工具函数 ----------
 async function sha512(message) {
   const encoder = new TextEncoder();
   const data = encoder.encode(message);
@@ -115,6 +115,20 @@ async function sha512(message) {
     .join('');
 }
 
+// ---------- 安全的 Base64URL 编码（避免 btoa 中文错误）----------
+function base64urlEncode(str) {
+  // 将字符串转换为 UTF-8 字节，再编码为 Base64，然后转为 Base64URL
+  const encoder = new TextEncoder();
+  const bytes = encoder.encode(str);
+  // 使用 btoa 处理每个字节的字符，但需要将字节数组转为字符串（Latin1 逐个转换）
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  const base64 = btoa(binary);
+  return base64.replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+}
+
 // ---------- JWT 生成函数 ----------
 async function generateToken(payload, secret, expiresIn) {
   const header = { alg: 'HS256', typ: 'JWT' };
@@ -122,13 +136,11 @@ async function generateToken(payload, secret, expiresIn) {
   const exp = now + (expiresIn.endsWith('h') ? parseInt(expiresIn) * 3600 : 86400);
   const fullPayload = { ...payload, iat: now, exp };
 
-  const encoder = new TextEncoder();
-  const headerB64 = btoa(JSON.stringify(header))
-    .replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
-  const payloadB64 = btoa(JSON.stringify(fullPayload))
-    .replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+  const headerB64 = base64urlEncode(JSON.stringify(header));
+  const payloadB64 = base64urlEncode(JSON.stringify(fullPayload));
   const data = `${headerB64}.${payloadB64}`;
 
+  const encoder = new TextEncoder();
   const key = await crypto.subtle.importKey(
     'raw',
     encoder.encode(secret),
@@ -137,7 +149,13 @@ async function generateToken(payload, secret, expiresIn) {
     ['sign']
   );
   const signature = await crypto.subtle.sign('HMAC', key, encoder.encode(data));
-  const signatureB64 = btoa(String.fromCharCode(...new Uint8Array(signature)))
+  // 将签名数组转为 Base64URL
+  const signatureBytes = new Uint8Array(signature);
+  let sigBinary = '';
+  for (let i = 0; i < signatureBytes.length; i++) {
+    sigBinary += String.fromCharCode(signatureBytes[i]);
+  }
+  const signatureB64 = btoa(sigBinary)
     .replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
 
   return `${headerB64}.${payloadB64}.${signatureB64}`;
