@@ -3,23 +3,18 @@ export async function onRequest(context) {
   const { request, env, next } = context;
   const url = new URL(request.url);
 
-  // 1. 公开路径（登录、注册、认证接口）
+  // 1. 放行公开页面和接口
   const publicPaths = ['/login.html', '/register.html', '/api/auth/login', '/api/auth/register'];
   if (publicPaths.some(p => url.pathname.startsWith(p))) {
     return next();
   }
 
-  // 2. 带文件扩展名的资源（静态文件），一律放行
+  // 2. 放行带扩展名的静态资源 (js, css, png, ico 等)
   if (/\.\w+$/.test(url.pathname)) {
     return next();
   }
 
-  // 3. 根路径 (主页) 也放行，由 index.html 处理
-  if (url.pathname === '/') {
-    return next();
-  }
-
-  // 4. 其余路径需要认证
+  // 3. 其余所有路径（包括 / 和 /api/data）都需要认证
   const cookie = request.headers.get('Cookie') || '';
   const tokenMatch = cookie.match(/token=([^;]+)/);
   let valid = false;
@@ -28,7 +23,9 @@ export async function onRequest(context) {
     try {
       const { payload } = await verifyToken(tokenMatch[1], env.JWT_SECRET);
       valid = true;
-    } catch (e) { /* token 无效 */ }
+    } catch (e) {
+      // token 无效，继续重定向
+    }
   }
 
   if (!valid) {
@@ -37,15 +34,19 @@ export async function onRequest(context) {
     return Response.redirect(redirectUrl.toString(), 302);
   }
 
+  // 认证通过，继续请求
   return next();
 }
 
-// JWT 验证（与之前相同）
+// JWT 验证函数
 async function verifyToken(token, secret) {
   const encoder = new TextEncoder();
   const key = await crypto.subtle.importKey(
-    'raw', encoder.encode(secret),
-    { name: 'HMAC', hash: 'SHA-256' }, false, ['verify']
+    'raw',
+    encoder.encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['verify']
   );
 
   const parts = token.split('.');
@@ -69,6 +70,8 @@ function base64UrlToArrayBuffer(base64url) {
     .padEnd(base64url.length + (4 - base64url.length % 4) % 4, '=');
   const binary = atob(base64);
   const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
   return bytes.buffer;
 }
