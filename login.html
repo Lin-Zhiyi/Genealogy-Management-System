@@ -62,10 +62,14 @@
           body: JSON.stringify({ username, password })
         });
         if (res.ok) {
-          const params = new URLSearchParams(window.location.search);
-          const redirect = params.get('redirect') || '/';
-          window.location.replace(redirect);
-        } else {
+  const params = new URLSearchParams(window.location.search);
+  let redirect = params.get('redirect') || '/';
+  // 防止循环：如果跳转目标是登录页或根，直接去 /
+  if (redirect.startsWith('/login') || redirect === '/') {
+    redirect = '/';
+  }
+  window.location.replace(redirect);
+} else {
           const data = await res.json();
           errorDiv.textContent = data.error || '登录失败';
         }
