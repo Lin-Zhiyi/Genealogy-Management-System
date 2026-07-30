@@ -1,44 +1,45 @@
-// functions/_middleware.js
 export async function onRequest(context) {
   const { request, env, next } = context;
   const url = new URL(request.url);
 
-  // 1. 放行公开页面和接口
+  // 公开资源：登录、注册、认证接口
   const publicPaths = ['/login.html', '/register.html', '/api/auth/login', '/api/auth/register'];
   if (publicPaths.some(p => url.pathname.startsWith(p))) {
     return next();
   }
 
-  // 2. 放行带扩展名的静态资源 (js, css, png, ico 等)
+  // 带扩展名的静态文件（.html 等也放行，确保 login.html 内的资源可用）
   if (/\.\w+$/.test(url.pathname)) {
     return next();
   }
 
-  // 3. 其余所有路径（包括 / 和 /api/data）都需要认证
+  // 其余请求（包括 /、/api/data 等）需要认证
   const cookie = request.headers.get('Cookie') || '';
   const tokenMatch = cookie.match(/token=([^;]+)/);
   let valid = false;
 
   if (tokenMatch) {
     try {
-      const { payload } = await verifyToken(tokenMatch[1], env.JWT_SECRET);
+      await verifyToken(tokenMatch[1], env.JWT_SECRET);
       valid = true;
     } catch (e) {
-      // token 无效，继续重定向
+      // 令牌无效，忽略
     }
   }
 
   if (!valid) {
     const redirectUrl = new URL('/login.html', request.url);
     redirectUrl.searchParams.set('redirect', url.pathname + url.search);
-    return Response.redirect(redirectUrl.toString(), 302);
+    // 清除客户端可能残留的无效 Cookie
+    const response = Response.redirect(redirectUrl.toString(), 302);
+    response.headers.set('Set-Cookie', 'token=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0');
+    return response;
   }
 
-  // 认证通过，继续请求
   return next();
 }
 
-// JWT 验证函数
+// JWT 验证（使用 Web Crypto API）
 async function verifyToken(token, secret) {
   const encoder = new TextEncoder();
   const key = await crypto.subtle.importKey(
