@@ -1,7 +1,19 @@
+// functions/api/auth/login.js
 export async function onRequestPost(context) {
   const { request, env } = context;
-  const { username, password } = await request.json();
 
+  // 1. 解析请求体
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return new Response(JSON.stringify({ error: '请求格式错误' }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+
+  const { username, password } = body;
   if (!username || !password) {
     return new Response(JSON.stringify({ error: '用户名和密码不能为空' }), {
       status: 400,
@@ -9,21 +21,75 @@ export async function onRequestPost(context) {
     });
   }
 
-  const userData = await env.USER_KV.get(`user:${username}`);
+  // 2. 从 KV 读取用户数据
+  let userData;
+  try {
+    userData = await env.USER_KV.get(`user:${username}`);
+  } catch (e) {
+    return new Response(JSON.stringify({ error: '服务器存储错误' }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+
   if (!userData) {
-    return new Response(JSON.stringify({ error: '用户名或密码错误' }), { status: 401 });
+    return new Response(JSON.stringify({ error: '用户名或密码错误' }), {
+      status: 401,
+      headers: { 'Content-Type': 'application/json' }
+    });
   }
 
-  const user = JSON.parse(userData);
-  const [salt, storedHash] = user.password.split(':');
-  const hash = await sha512(salt + password);
-
-  if (hash !== storedHash) {
-    return new Response(JSON.stringify({ error: '用户名或密码错误' }), { status: 401 });
+  // 3. 解析用户数据
+  let user;
+  try {
+    user = JSON.parse(userData);
+  } catch {
+    return new Response(JSON.stringify({ error: '用户数据损坏' }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' }
+    });
   }
 
-  const token = await generateToken({ username, role: user.role }, env.JWT_SECRET, '24h');
+  // 4. 验证密码（格式：盐:哈希）
+  const parts = user.password.split(':');
+  if (parts.length !== 2) {
+    return new Response(JSON.stringify({ error: '用户密码格式错误' }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+  const [salt, storedHash] = parts;
 
+  // 计算 SHA-512(盐 + 输入密码)
+  let inputHash;
+  try {
+    inputHash = await sha512(salt + password);
+  } catch (e) {
+    return new Response(JSON.stringify({ error: '服务器内部错误' }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+
+  if (inputHash !== storedHash) {
+    return new Response(JSON.stringify({ error: '用户名或密码错误' }), {
+      status: 401,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+
+  // 5. 生成 JWT
+  let token;
+  try {
+    token = await generateToken({ username, role: user.role }, env.JWT_SECRET, '24h');
+  } catch (e) {
+    return new Response(JSON.stringify({ error: '令牌生成失败' }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+
+  // 6. 设置 Cookie 并返回成功
   const headers = new Headers({
     'Content-Type': 'application/json',
     'Set-Cookie': `token=${token}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=86400`
@@ -32,6 +98,7 @@ export async function onRequestPost(context) {
   return new Response(JSON.stringify({ success: true }), { headers });
 }
 
+// ---------- SHA-512 哈希（与注册接口完全一致）----------
 async function sha512(message) {
   const encoder = new TextEncoder();
   const data = encoder.encode(message);
@@ -41,6 +108,7 @@ async function sha512(message) {
     .join('');
 }
 
+// ---------- JWT 生成函数（与中间件/me 接口兼容）----------
 async function generateToken(payload, secret, expiresIn) {
   const header = { alg: 'HS256', typ: 'JWT' };
   const now = Math.floor(Date.now() / 1000);
@@ -48,8 +116,10 @@ async function generateToken(payload, secret, expiresIn) {
   const fullPayload = { ...payload, iat: now, exp };
 
   const encoder = new TextEncoder();
-  const headerB64 = btoa(JSON.stringify(header)).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
-  const payloadB64 = btoa(JSON.stringify(fullPayload)).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+  const headerB64 = btoa(JSON.stringify(header))
+    .replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+  const payloadB64 = btoa(JSON.stringify(fullPayload))
+    .replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
   const data = `${headerB64}.${payloadB64}`;
 
   const key = await crypto.subtle.importKey(
