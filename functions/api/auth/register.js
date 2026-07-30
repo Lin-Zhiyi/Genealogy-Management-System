@@ -7,13 +7,25 @@ export async function onRequestPost(context) {
     return new Response(JSON.stringify({ error: '所有字段都是必填的' }), { status: 400 });
   }
 
-  // 验证管理员密码
-  const adminHashParts = env.ADMIN_PASSWORD_HASH.split(':');
-  if (adminHashParts.length !== 2) {
-    return new Response(JSON.stringify({ error: '服务器配置错误' }), { status: 500 });
+  // 从 KV 获取管理员账户数据
+  const adminData = await env.USER_KV.get('user:admin');
+  if (!adminData) {
+    return new Response(JSON.stringify({ error: '管理员账户未配置，无法注册' }), { status: 500 });
   }
-  const adminSalt = adminHashParts[0];
-  const adminStoredHash = adminHashParts[1];
+
+  let adminUser;
+  try {
+    adminUser = JSON.parse(adminData);
+  } catch {
+    return new Response(JSON.stringify({ error: '管理员数据损坏' }), { status: 500 });
+  }
+
+  // 验证管理员密码（与管理员当前密码一致）
+  const adminHashParts = adminUser.password.split(':');
+  if (adminHashParts.length !== 2) {
+    return new Response(JSON.stringify({ error: '管理员密码格式错误' }), { status: 500 });
+  }
+  const [adminSalt, adminStoredHash] = adminHashParts;
   const adminHash = await sha512(adminSalt + adminPassword);
   if (adminHash !== adminStoredHash) {
     return new Response(JSON.stringify({ error: '管理员密码错误' }), { status: 403 });
@@ -31,7 +43,7 @@ export async function onRequestPost(context) {
   const user = {
     username,
     password: `${salt}:${hash}`,
-    role: 'user' // 普通用户
+    role: 'user'
   };
 
   await env.USER_KV.put(`user:${username}`, JSON.stringify(user));
@@ -42,6 +54,7 @@ export async function onRequestPost(context) {
   });
 }
 
+// ---------- 工具函数 ----------
 async function sha512(message) {
   const encoder = new TextEncoder();
   const data = encoder.encode(message);
