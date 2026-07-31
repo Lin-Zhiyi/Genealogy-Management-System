@@ -110,18 +110,20 @@
     .sash { width: 5px; background: #e0e0e0; cursor: col-resize; flex-shrink: 0; transition: background 0.15s; }
     .sash:hover, .sash.active { background: #0078d4; }
     .tree-panel { background: var(--bg-tree); overflow: auto; flex-shrink: 0; min-width: 180px; padding: 6px 0; }
+
     .tree-node {
       cursor: pointer; white-space: nowrap; padding: 4px 8px 4px 4px; margin: 1px 2px;
       border-radius: 4px; display: flex; align-items: center; gap: 4px; font-size: 13px;
-      position: relative;
     }
     .tree-node:hover { background: var(--hover-bg); }
+    /* 选中时让宽度自适应内容，保证蓝色背景完整覆盖姓名（修复手机端蓝色条带过短问题） */
     .tree-node.selected {
       background: var(--highlight-bg);
       color: var(--highlight-text);
-      z-index: 1;
-      box-shadow: -2000px 0 0 0 var(--highlight-bg), 2000px 0 0 0 var(--highlight-bg);
+      width: max-content;
+      min-width: calc(100% - 4px);
     }
+
     .tree-arrow { width: 16px; height: 16px; font-size: 9px; display: inline-flex; align-items: center; justify-content: center; color: #555; }
     .tree-arrow.expanded { transform: rotate(90deg); }
     .tree-arrow.no-children { visibility: hidden; }
@@ -396,7 +398,7 @@
   let pendingOperations = [];
   let baseVersion = 0;
   let syncTimer = null;
-  let isUserEditing = false;
+  let isUserEditing = false;  // 新增：标记用户是否正在编辑
 
   if (/Mobi|Android/i.test(navigator.userAgent)) document.body.classList.add('mobile-layout');
 
@@ -495,6 +497,7 @@
   function scheduleSync() {
     if (syncTimer) clearTimeout(syncTimer);
     if (isUserEditing) {
+      // 用户正在编辑，延迟更长时间后重试
       syncTimer = setTimeout(() => scheduleSync(), 2000);
       return;
     }
@@ -530,9 +533,10 @@
   }
 
   async function handleConflictAndRetry(ops, remoteData, remoteVersion) {
-    const savedFamilyId = appData.currentFamilyId;
+    const savedFamilyId = appData.currentFamilyId;  // 保存当前家族
     appData = remoteData;
     baseVersion = remoteVersion;
+    // 恢复当前家族
     if (savedFamilyId && appData.families.some(f => f.id === savedFamilyId)) {
       appData.currentFamilyId = savedFamilyId;
     } else if (appData.families.length > 0) {
@@ -754,7 +758,7 @@
   }
 
   function startEditing(tr, fieldName, node, attrName, fieldType) {
-    isUserEditing = true;
+    isUserEditing = true;  // 标记开始编辑
     const td = tr.querySelector('.col-data'); if (td.querySelector('input,textarea,select')) return;
     const currentVal = fieldName === '姓名' ? node.name : (attrName ? getAttr(node, attrName) : '');
     let input;
@@ -773,7 +777,7 @@
         addOperation('setAttr', { memberId: node.id, attrName, value: newVal });
       }
       isUserEditing = false;
-      scheduleSync();
+      scheduleSync(); // 立即尝试同步
     };
     input.addEventListener('blur', () => {
       isUserEditing = false;
@@ -936,7 +940,7 @@
   }
 
   function showMemberDialog(existing, parent) {
-    isUserEditing = true;
+    isUserEditing = true; // 编辑状态开始
     const isEdit = !!existing;
     const node = existing || { name: '', attributes: [{ name:'性别', value:'男' }, { name:'出生日期', value:'' }, { name:'配偶', value:'' }, { name:'出生地', value:'' }, { name:'备注', value:'' }] };
     const overlay = document.createElement('div'); overlay.className = 'modal-overlay';
@@ -973,6 +977,7 @@
         const parentId = parent ? parent.id : (getCurrentRoot() ? getCurrentRoot().id : null);
         if (parentId) {
           addOperation('addChild', { parentId, node: newNode });
+          // 不再自动选中新成员，保持原有选中
           expandedNodeIds.add(parentId);
         }
       }
