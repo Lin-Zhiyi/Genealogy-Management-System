@@ -110,7 +110,6 @@
     .sash { width: 5px; background: #e0e0e0; cursor: col-resize; flex-shrink: 0; transition: background 0.15s; }
     .sash:hover, .sash.active { background: #0078d4; }
     .tree-panel { background: var(--bg-tree); overflow: auto; flex-shrink: 0; min-width: 180px; padding: 6px 0; }
-
     .tree-node {
       cursor: pointer; white-space: nowrap; padding: 4px 8px 4px 4px; margin: 1px 2px;
       border-radius: 4px; display: flex; align-items: center; gap: 4px; font-size: 13px;
@@ -122,7 +121,6 @@
       width: max-content;
       min-width: calc(100% - 4px);
     }
-
     .tree-arrow { width: 16px; height: 16px; font-size: 9px; display: inline-flex; align-items: center; justify-content: center; color: #555; }
     .tree-arrow.expanded { transform: rotate(90deg); }
     .tree-arrow.no-children { visibility: hidden; }
@@ -659,7 +657,22 @@
 
   function renderDetailPanel(node) {
     document.getElementById('detailTitle').textContent = node ? '👤 ' + node.name : '请选择一个成员';
-    document.getElementById('detailPath').textContent = (node && !node.isRoot) ? '代际: ' + getNodePath(node).join(' > ') : '';
+    const detailPathEl = document.getElementById('detailPath');
+    if (node && !node.isRoot) {
+      const ancestors = [];
+      let cur = node;
+      while (cur) {
+        if (!cur.isRoot) ancestors.unshift({ id: cur.id, name: cur.name });
+        cur = findParentNode(getCurrentRoot(), cur.id);
+      }
+      const pathHtml = ancestors.map(a =>
+        `<a href="#" onclick="window.selectNode('${a.id}'); return false;" style="color:#0078d4; text-decoration:none; cursor:pointer;">${escapeHtml(a.name)}</a>`
+      ).join(' <span style="color:#888;">></span> ');
+      detailPathEl.innerHTML = '代际: ' + pathHtml;
+    } else {
+      detailPathEl.textContent = '';
+    }
+
     const empty = document.getElementById('emptyState'), table = document.getElementById('attrTable'), tbody = document.getElementById('attrTableBody');
     if (!node || node.isRoot) { empty.style.display = 'flex'; table.style.display = 'none'; return; }
     empty.style.display = 'none'; table.style.display = 'table'; tbody.innerHTML = '';
@@ -1188,15 +1201,13 @@
     if(selectedNodeId && root){
       const node = findNodeById(root, selectedNodeId);
       if(node && !node.isRoot){
-        // 构建祖先路径（不含根节点）
         const ancestors = [];
         let cur = node;
         while(cur){
           if(!cur.isRoot) ancestors.unshift({id: cur.id, name: cur.name});
           cur = findParentNode(root, cur.id);
         }
-        // 生成可点击的链接
-        const pathHtml = ancestors.map(a => 
+        const pathHtml = ancestors.map(a =>
           `<a href="#" onclick="window.selectNode('${a.id}'); return false;" style="color:#0078d4; text-decoration:none; cursor:pointer;">${escapeHtml(a.name)}</a>`
         ).join(' <span style="color:#888;">></span> ');
         document.getElementById('statusPath').innerHTML = pathHtml;
@@ -1270,7 +1281,7 @@
   window.showHelp=showHelp; window.handleFileImport=handleFileImport; window.switchTab=switchTab;
   window.switchFamily=switchFamily;
   window.syncToCloud=syncNow; window.loadFromCloud=loadFromCloud;
-  window.selectNode = selectNode;  // 暴露到全局，供状态栏链接使用
+  window.selectNode = selectNode;
 })();
 </script>
 </body>
