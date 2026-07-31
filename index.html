@@ -1022,13 +1022,30 @@
     overlay.querySelector('#cancelCustom').onclick=()=>overlay.remove();
     overlay.querySelector('#okCustom').onclick=()=>{ let u=parseInt(document.getElementById('customUp').value)||0, d=parseInt(document.getElementById('customDown').value)||0; u=Math.min(9,Math.max(0,u)); d=Math.min(9,Math.max(0,d)); overlay.remove(); cb(u,d); };
   }
+
+  // 修改 renderOrgChart，使其与 renderDetailPanel 一样显示可点击的代际路径和代数
   function renderOrgChart(node){
     const gen = (node && !node.isRoot) ? getNodePath(node).length : 0;
     document.getElementById('detailTitle').innerHTML = node
       ? `🏢 ${escapeHtml(node.name)}${gen > 0 ? `<span style="font-size:10px; color:#888; margin-left:6px;">(第${gen}代)</span>` : ''}`
       : '请选择一个成员';
-    
-    document.getElementById('detailPath').textContent = (node && !node.isRoot) ? '代际: '+getNodePath(node).join(' > ') : '';
+
+    const detailPathEl = document.getElementById('detailPath');
+    if (node && !node.isRoot) {
+      const ancestors = [];
+      let cur = node;
+      while (cur) {
+        if (!cur.isRoot) ancestors.unshift({ id: cur.id, name: cur.name });
+        cur = findParentNode(getCurrentRoot(), cur.id);
+      }
+      const pathHtml = ancestors.map(a =>
+        `<a href="#" onclick="window.selectNode('${a.id}'); return false;" style="color:#0078d4; text-decoration:none; cursor:pointer;">${escapeHtml(a.name)}</a>`
+      ).join(' <span style="color:#888;">></span> ');
+      detailPathEl.innerHTML = '代际: ' + pathHtml;
+    } else {
+      detailPathEl.textContent = '';
+    }
+
     const orgTree=document.getElementById('orgTree'), empty=document.getElementById('relationEmpty');
     orgTree.innerHTML=''; orgTree.style.display='none'; empty.style.display='flex';
     if(!node || node.isRoot) return;
