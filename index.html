@@ -501,7 +501,8 @@
         showInfoBar('✅ 已同步', 1500);
       } else if (res.status === 409) {
         const conflict = await res.json();
-        await handleConflictAndRetry(ops, conflict.latestData, conflict.latestVersion);
+        // 自动合并可能失败，显示冲突对话框
+        showConflictDialog(ops, conflict.latestData, conflict.latestVersion);
       } else {
         const err = await res.json();
         showInfoBar(`❌ 同步失败: ${err.error}`, 3000);
@@ -509,30 +510,62 @@
     } catch (e) { showInfoBar('❌ 网络错误', 3000); }
   }
 
+  // 冲突对话框：用户可选择加载最新、强制上传或取消
+  function showConflictDialog(ops, remoteData, remoteVersion) {
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.innerHTML = `
+      <div class="modal-dialog" style="width:400px;">
+        <div class="modal-header">⚠️ 数据冲突</div>
+        <div class="modal-body" style="text-align:center;">
+          <p>您有未同步的修改与云端冲突。</p>
+          <button id="loadRemoteBtn" class="btn-primary" style="margin:5px;">📥 加载最新（放弃本地修改）</button>
+          <button id="forceUploadBtn" class="btn-cancel" style="margin:5px;">⬆️ 强制上传（覆盖云端）</button>
+          <button id="cancelConflictBtn" class="btn-cancel" style="margin:5px;">取消</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+
+    document.getElementById('loadRemoteBtn').onclick = async () => {
+      overlay.remove();
+      await loadRemoteData(remoteData, remoteVersion);
+      showInfoBar('已加载最新云端数据', 3000);
+    };
+
+    document.getElementById('forceUploadBtn').onclick = async () => {
+      overlay.remove();
+      // 强制上传：使用 PUT 全量覆盖
+      const payload = JSON.parse(JSON.stringify(appData));
+      payload._forceOverwrite = true;
+      try {
+        const res = await fetch(CLOUD_API_URL, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        if (res.ok) {
+          const result = await res.json();
+          baseVersion = result.version;
+          pendingOperations = [];
+          saveDataToLocal();
+          showInfoBar('✅ 强制上传成功', 3000);
+        } else {
+          const err = await res.json();
+          showInfoBar(`❌ 强制上传失败: ${err.error}`, 3000);
+        }
+      } catch (e) { showInfoBar('❌ 网络错误', 3000); }
+    };
+
+    document.getElementById('cancelConflictBtn').onclick = () => {
+      overlay.remove();
+      // 保留本地未提交的操作，用户可稍后重试
+      showInfoBar('已取消同步，未提交的修改保留', 3000);
+    };
+  }
+
   async function handleConflictAndRetry(ops, remoteData, remoteVersion) {
-    appData = remoteData;
-    baseVersion = remoteVersion;
-    selectedNodeId = null; expandedNodeIds.clear();
-    const root = getCurrentRoot(); if (root) expandedNodeIds.add(root.id);
-    for (const op of ops) localApply(op);
-    renderTree(); refreshDetailView(); updateFamilySelector(); saveDataToLocal();
-    pendingOperations = [];
-    try {
-      const res = await fetch(CLOUD_API_URL, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ baseVersion, operations: ops })
-      });
-      if (res.ok) {
-        const result = await res.json();
-        baseVersion = result.version;
-        showInfoBar('✅ 自动合并成功', 1500);
-      } else {
-        const err = await res.json();
-        showInfoBar(`❌ 自动合并失败: ${err.error}`, 5000);
-        await loadRemoteData(remoteData, remoteVersion);
-      }
-    } catch (e) { showInfoBar('❌ 网络错误', 3000); }
+    // 此函数不再使用，但保留以防其他地方调用
+    showConflictDialog(ops, remoteData, remoteVersion);
   }
 
   async function loadRemoteData(data, version) {
@@ -752,7 +785,6 @@
     if (name) addOperation('deleteAttr', { memberId: node.id, attrName: name });
   }
 
-  // 删除成员（带撤销）
   function deleteSelectedMember(id) {
     const nid = id || selectedNodeId; if (!nid) return;
     const root = getCurrentRoot(); if (!root) return;
@@ -780,13 +812,11 @@
     document.getElementById('undoDeleteBtn').onclick = () => performUndo(bar);
   }
 
-  // 修改重点：撤销时不再手动push，只通过addOperation添加
   function performUndo(bar) {
     if (!pendingDelete) return;
     const { node: restoredNode, parent } = pendingDelete;
     pendingDelete = null;
     bar.remove();
-    // 生成 addChild 操作，由 localApply 负责将节点加回父节点
     addOperation('addChild', { parentId: parent.id, node: restoredNode });
     showInfoBar('已撤销删除');
   }
@@ -799,7 +829,7 @@
     if (dur > 0) setTimeout(() => { if (bar.parentNode) bar.remove(); }, dur);
   }
 
-  // ---------- 排序、序言、家族管理 ----------
+  // 排序、序言、家族管理
   function openSortDialog() {
     if (!selectedNodeId || !getCurrentRoot()) return;
     const node = findNodeById(getCurrentRoot(), selectedNodeId);
@@ -870,7 +900,6 @@
     });
   }
 
-  // 成员对话框
   function showMemberDialog(existing, parent) {
     const isEdit = !!existing;
     const node = existing || { name: '', attributes: [{ name:'性别', value:'男' }, { name:'出生日期', value:'' }, { name:'配偶', value:'' }, { name:'出生地', value:'' }, { name:'备注', value:'' }] };
