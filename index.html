@@ -218,7 +218,13 @@
       background: #f0f0f0; border-top: 1px solid #d0d0d0; padding: 5px 14px;
       display: flex; align-items: center; gap: 16px; font-size: 11.5px; color: #666; flex-shrink: 0;
     }
-    .status-path { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    /* 修改：允许状态栏路径横向滚动 */
+    .status-path {
+      flex: 1;
+      overflow-x: auto;
+      white-space: nowrap;
+      -webkit-overflow-scrolling: touch;
+    }
     .status-count { flex-shrink: 0; }
     .copyright-bar {
       background: #e8e8e8; border-top: 1px solid #d0d0d0; padding: 5px 14px;
@@ -658,7 +664,7 @@
   function renderDetailPanel(node) {
     const gen = (node && !node.isRoot) ? getNodePath(node).length : 0;
     document.getElementById('detailTitle').innerHTML = node
-      ? `👤 ${escapeHtml(node.name)}${gen > 0 ? `<span style="font-size:10px; color:#888; margin-left:6px;">(第${gen}代)</span>` : ''}`
+      ? `👤 ${escapeHtml(node.name)}${gen > 0 ? `<span style="font-size:10px; color:#444; margin-left:6px;">(第${gen}代)</span>` : ''}`
       : '请选择一个成员';
     
     const detailPathEl = document.getElementById('detailPath');
@@ -1027,7 +1033,7 @@
   function renderOrgChart(node){
     const gen = (node && !node.isRoot) ? getNodePath(node).length : 0;
     document.getElementById('detailTitle').innerHTML = node
-      ? `🏢 ${escapeHtml(node.name)}${gen > 0 ? `<span style="font-size:10px; color:#888; margin-left:6px;">(第${gen}代)</span>` : ''}`
+      ? `🏢 ${escapeHtml(node.name)}${gen > 0 ? `<span style="font-size:10px; color:#444; margin-left:6px;">(第${gen}代)</span>` : ''}`
       : '请选择一个成员';
 
     const detailPathEl = document.getElementById('detailPath');
@@ -1221,6 +1227,18 @@
   }
   function showHelp(){ alert('...'); }
 
+  // 计算家族最大代数
+  function getMaxGeneration(node) {
+    if (!node) return 0;
+    if (!node.children || node.children.length === 0) return 0;
+    let max = 0;
+    for (const child of node.children) {
+      const depth = getMaxGeneration(child);
+      if (depth > max) max = depth;
+    }
+    return max + 1;
+  }
+
   function updateStatusBar(){
     const root=getCurrentRoot(), fam=getCurrentFamily();
     if(selectedNodeId && root){
@@ -1242,7 +1260,9 @@
     } else {
       document.getElementById('statusPath').textContent = fam ? fam.name : '族谱管理系统';
     }
-    document.getElementById('statusCount').textContent = '共 '+(root?countMembers(root):0)+' 位成员';
+    const memberCount = root ? countMembers(root) : 0;
+    const genCount = root ? getMaxGeneration(root) : 0;
+    document.getElementById('statusCount').textContent = `共 ${memberCount} 位成员，${genCount} 代`;
   }
 
   document.addEventListener('keydown',function(e){
