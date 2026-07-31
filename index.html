@@ -118,8 +118,6 @@
     .tree-node.selected {
       background: var(--highlight-bg);
       color: var(--highlight-text);
-      width: max-content;
-      min-width: calc(100% - 4px);
     }
     .tree-arrow { width: 16px; height: 16px; font-size: 9px; display: inline-flex; align-items: center; justify-content: center; color: #555; }
     .tree-arrow.expanded { transform: rotate(90deg); }
@@ -218,7 +216,6 @@
       background: #f0f0f0; border-top: 1px solid #d0d0d0; padding: 5px 14px;
       display: flex; align-items: center; gap: 16px; font-size: 11.5px; color: #666; flex-shrink: 0;
     }
-    /* 修改：允许状态栏路径横向滚动 */
     .status-path {
       flex: 1;
       overflow-x: auto;
@@ -396,6 +393,7 @@
   let pendingOperations = [];
   let baseVersion = 0;
   let syncTimer = null;
+  let isUserEditing = false;  // 新增：标记用户是否正在编辑
 
   if (/Mobi|Android/i.test(navigator.userAgent)) document.body.classList.add('mobile-layout');
 
@@ -493,6 +491,11 @@
 
   function scheduleSync() {
     if (syncTimer) clearTimeout(syncTimer);
+    if (isUserEditing) {
+      // 用户正在编辑，延迟更长时间后重试
+      syncTimer = setTimeout(() => scheduleSync(), 2000);
+      return;
+    }
     syncTimer = setTimeout(() => syncNow(), 1500);
   }
 
@@ -525,8 +528,17 @@
   }
 
   async function handleConflictAndRetry(ops, remoteData, remoteVersion) {
+    const savedFamilyId = appData.currentFamilyId;  // 保存当前家族
     appData = remoteData;
     baseVersion = remoteVersion;
+    // 恢复当前家族
+    if (savedFamilyId && appData.families.some(f => f.id === savedFamilyId)) {
+      appData.currentFamilyId = savedFamilyId;
+    } else if (appData.families.length > 0) {
+      appData.currentFamilyId = appData.families[0].id;
+    } else {
+      appData.currentFamilyId = null;
+    }
     selectedNodeId = null; expandedNodeIds.clear();
     const root = getCurrentRoot(); if (root) expandedNodeIds.add(root.id);
     for (const op of ops) localApply(op);
@@ -741,6 +753,7 @@
   }
 
   function startEditing(tr, fieldName, node, attrName, fieldType) {
+    isUserEditing = true;  // 标记开始编辑
     const td = tr.querySelector('.col-data'); if (td.querySelector('input,textarea,select')) return;
     const currentVal = fieldName === '姓名' ? node.name : (attrName ? getAttr(node, attrName) : '');
     let input;
@@ -758,12 +771,19 @@
       } else if (attrName) {
         addOperation('setAttr', { memberId: node.id, attrName, value: newVal });
       }
+      isUserEditing = false;
+      scheduleSync(); // 立即尝试同步
     };
-    input.addEventListener('blur', save);
+    input.addEventListener('blur', () => {
+      isUserEditing = false;
+      scheduleSync();
+      save();
+    });
     input.addEventListener('keydown', e => { if (e.key==='Enter' && fieldType!=='textarea') { e.preventDefault(); save(); } });
   }
 
   function startEditingCustom(tr, idx, node) {
+    isUserEditing = true;
     const td = tr.querySelector('.col-data'); if (td.querySelector('input')) return;
     const currentVal = node.attributes[idx]?.value || '';
     const input = document.createElement('input'); input.value = currentVal; td.innerHTML = ''; td.appendChild(input); input.focus();
@@ -771,8 +791,14 @@
       if (node.attributes[idx]) {
         addOperation('setAttr', { memberId: node.id, attrName: node.attributes[idx].name, value: input.value.trim() });
       }
+      isUserEditing = false;
+      scheduleSync();
     };
-    input.addEventListener('blur', save);
+    input.addEventListener('blur', () => {
+      isUserEditing = false;
+      scheduleSync();
+      save();
+    });
     input.addEventListener('keydown', e => { if (e.key==='Enter') { e.preventDefault(); save(); } });
   }
 
@@ -909,6 +935,7 @@
   }
 
   function showMemberDialog(existing, parent) {
+    isUserEditing = true; // 编辑状态开始
     const isEdit = !!existing;
     const node = existing || { name: '', attributes: [{ name:'性别', value:'男' }, { name:'出生日期', value:'' }, { name:'配偶', value:'' }, { name:'出生地', value:'' }, { name:'备注', value:'' }] };
     const overlay = document.createElement('div'); overlay.className = 'modal-overlay';
@@ -920,7 +947,11 @@
       <div class="form-group"><label>备注</label><input type="text" id="dNote" value="${escapeHtml(getAttr(node,'备注'))}" style="width:100%;padding:8px;"></div>
     </div><div class="modal-footer"><button class="btn-cancel" id="dCancel">取消</button><button class="btn-primary" id="dOk">${isEdit?'保存':'添加'}</button></div></div>`;
     document.body.appendChild(overlay);
-    const close = () => overlay.remove();
+    const close = () => {
+      overlay.remove();
+      isUserEditing = false;
+      scheduleSync();
+    };
     overlay.querySelector('#dCancel').onclick = close;
     overlay.querySelector('#dOk').onclick = () => {
       const name = overlay.querySelector('#dName').value.trim(); if (!name) { alert('请输入姓名'); return; }
@@ -941,7 +972,7 @@
         const parentId = parent ? parent.id : (getCurrentRoot() ? getCurrentRoot().id : null);
         if (parentId) {
           addOperation('addChild', { parentId, node: newNode });
-          selectedNodeId = newNode.id;
+          // 不再自动选中新成员，保持原有选中
           expandedNodeIds.add(parentId);
         }
       }
@@ -1029,7 +1060,6 @@
     overlay.querySelector('#okCustom').onclick=()=>{ let u=parseInt(document.getElementById('customUp').value)||0, d=parseInt(document.getElementById('customDown').value)||0; u=Math.min(9,Math.max(0,u)); d=Math.min(9,Math.max(0,d)); overlay.remove(); cb(u,d); };
   }
 
-  // 修改 renderOrgChart，使其与 renderDetailPanel 一样显示可点击的代际路径和代数
   function renderOrgChart(node){
     const gen = (node && !node.isRoot) ? getNodePath(node).length : 0;
     document.getElementById('detailTitle').innerHTML = node
@@ -1227,7 +1257,6 @@
   }
   function showHelp(){ alert('...'); }
 
-  // 计算家族最大代数
   function getMaxGeneration(node) {
     if (!node) return 0;
     if (!node.children || node.children.length === 0) return 0;
