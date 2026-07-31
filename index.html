@@ -111,17 +111,18 @@
     .sash:hover, .sash.active { background: #0078d4; }
     .tree-panel { background: var(--bg-tree); overflow: auto; flex-shrink: 0; min-width: 180px; padding: 6px 0; }
 
+    /* 修复：所有树节点统一宽度，保证对齐；选中节点不再额外设置宽度，避免蓝色条带覆盖不全 */
     .tree-node {
       cursor: pointer; white-space: nowrap; padding: 4px 8px 4px 4px; margin: 1px 2px;
       border-radius: 4px; display: flex; align-items: center; gap: 4px; font-size: 13px;
-      width: calc(100% - 4px); /* 保证所有节点宽度一致，与父容器对齐 */
+      width: calc(100% - 4px);
       box-sizing: border-box;
     }
     .tree-node:hover { background: var(--hover-bg); }
     .tree-node.selected {
       background: var(--highlight-bg);
       color: var(--highlight-text);
-      /* 不再需要额外的宽度设置，宽度继承自 .tree-node，保证对齐 */
+      /* 不再设置 width / min-width，保持与普通节点相同的宽度 */
     }
 
     .tree-arrow { width: 16px; height: 16px; font-size: 9px; display: inline-flex; align-items: center; justify-content: center; color: #555; }
@@ -1049,6 +1050,7 @@
     };
   }
 
+  // 其他功能保持不变
   function updateViewModeButtons(m) { document.querySelectorAll('#viewModeBar button[data-mode]').forEach(b=>b.classList.remove('active')); const btn=document.querySelector(`#viewModeBar button[data-mode="${m}"]`); if(btn)btn.classList.add('active'); }
   function updateZoomButtons(){ document.getElementById('btnFitScreen').classList.toggle('active',autoFitEnabled); document.getElementById('btnOriginalSize').classList.toggle('active',!autoFitEnabled && currentScale===1); }
   function setViewMode(mode){ if(mode==='custom'){ showCustomRangeDialog((up,down)=>{customUp=up;customDown=down;relationViewMode='custom';updateViewModeButtons('custom');switchToRelation();}); return; } relationViewMode=mode; updateViewModeButtons(mode); switchToRelation(); }
