@@ -113,11 +113,14 @@
     .tree-node {
       cursor: pointer; white-space: nowrap; padding: 4px 8px 4px 4px; margin: 1px 2px;
       border-radius: 4px; display: flex; align-items: center; gap: 4px; font-size: 13px;
+      position: relative;
     }
     .tree-node:hover { background: var(--hover-bg); }
     .tree-node.selected {
       background: var(--highlight-bg);
       color: var(--highlight-text);
+      z-index: 1;
+      box-shadow: -2000px 0 0 0 var(--highlight-bg), 2000px 0 0 0 var(--highlight-bg);
     }
     .tree-arrow { width: 16px; height: 16px; font-size: 9px; display: inline-flex; align-items: center; justify-content: center; color: #555; }
     .tree-arrow.expanded { transform: rotate(90deg); }
@@ -393,7 +396,7 @@
   let pendingOperations = [];
   let baseVersion = 0;
   let syncTimer = null;
-  let isUserEditing = false;  // 新增：标记用户是否正在编辑
+  let isUserEditing = false;
 
   if (/Mobi|Android/i.test(navigator.userAgent)) document.body.classList.add('mobile-layout');
 
@@ -492,7 +495,6 @@
   function scheduleSync() {
     if (syncTimer) clearTimeout(syncTimer);
     if (isUserEditing) {
-      // 用户正在编辑，延迟更长时间后重试
       syncTimer = setTimeout(() => scheduleSync(), 2000);
       return;
     }
@@ -528,10 +530,9 @@
   }
 
   async function handleConflictAndRetry(ops, remoteData, remoteVersion) {
-    const savedFamilyId = appData.currentFamilyId;  // 保存当前家族
+    const savedFamilyId = appData.currentFamilyId;
     appData = remoteData;
     baseVersion = remoteVersion;
-    // 恢复当前家族
     if (savedFamilyId && appData.families.some(f => f.id === savedFamilyId)) {
       appData.currentFamilyId = savedFamilyId;
     } else if (appData.families.length > 0) {
@@ -753,7 +754,7 @@
   }
 
   function startEditing(tr, fieldName, node, attrName, fieldType) {
-    isUserEditing = true;  // 标记开始编辑
+    isUserEditing = true;
     const td = tr.querySelector('.col-data'); if (td.querySelector('input,textarea,select')) return;
     const currentVal = fieldName === '姓名' ? node.name : (attrName ? getAttr(node, attrName) : '');
     let input;
@@ -772,7 +773,7 @@
         addOperation('setAttr', { memberId: node.id, attrName, value: newVal });
       }
       isUserEditing = false;
-      scheduleSync(); // 立即尝试同步
+      scheduleSync();
     };
     input.addEventListener('blur', () => {
       isUserEditing = false;
@@ -935,7 +936,7 @@
   }
 
   function showMemberDialog(existing, parent) {
-    isUserEditing = true; // 编辑状态开始
+    isUserEditing = true;
     const isEdit = !!existing;
     const node = existing || { name: '', attributes: [{ name:'性别', value:'男' }, { name:'出生日期', value:'' }, { name:'配偶', value:'' }, { name:'出生地', value:'' }, { name:'备注', value:'' }] };
     const overlay = document.createElement('div'); overlay.className = 'modal-overlay';
@@ -972,7 +973,6 @@
         const parentId = parent ? parent.id : (getCurrentRoot() ? getCurrentRoot().id : null);
         if (parentId) {
           addOperation('addChild', { parentId, node: newNode });
-          // 不再自动选中新成员，保持原有选中
           expandedNodeIds.add(parentId);
         }
       }
