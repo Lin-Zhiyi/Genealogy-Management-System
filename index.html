@@ -500,9 +500,9 @@
         saveDataToLocal();
         showInfoBar('✅ 已同步', 1500);
       } else if (res.status === 409) {
-        const conflict = await res.json();
-        // 自动合并可能失败，显示冲突对话框
-        showConflictDialog(ops, conflict.latestData, conflict.latestVersion);
+  const conflict = await res.json();
+  // 自动重试：拉取最新数据，重放操作，再次提交
+  await handleConflictAndRetry(ops, conflict.latestData, conflict.latestVersion);
       } else {
         const err = await res.json();
         showInfoBar(`❌ 同步失败: ${err.error}`, 3000);
@@ -511,7 +511,7 @@
   }
 
   // 冲突对话框：用户可选择加载最新、强制上传或取消
-  function showConflictDialog(ops, remoteData, remoteVersion) {
+  /*function showConflictDialog(ops, remoteData, remoteVersion) {
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
     overlay.innerHTML = `
@@ -561,12 +561,33 @@
       // 保留本地未提交的操作，用户可稍后重试
       showInfoBar('已取消同步，未提交的修改保留', 3000);
     };
-  }
+  }*/
 
   async function handleConflictAndRetry(ops, remoteData, remoteVersion) {
-    // 此函数不再使用，但保留以防其他地方调用
-    showConflictDialog(ops, remoteData, remoteVersion);
-  }
+  appData = remoteData;
+  baseVersion = remoteVersion;
+  selectedNodeId = null; expandedNodeIds.clear();
+  const root = getCurrentRoot(); if (root) expandedNodeIds.add(root.id);
+  for (const op of ops) localApply(op);
+  renderTree(); refreshDetailView(); updateFamilySelector(); saveDataToLocal();
+  pendingOperations = [];
+  try {
+    const res = await fetch(CLOUD_API_URL, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ baseVersion, operations: ops })
+    });
+    if (res.ok) {
+      const result = await res.json();
+      baseVersion = result.version;
+      showInfoBar('✅ 自动同步成功', 1500);
+    } else {
+      const err = await res.json();
+      showInfoBar(`❌ 同步失败: ${err.error}`, 5000);
+      // 最终失败，静默处理（用户可手动刷新）
+    }
+  } catch (e) { showInfoBar('❌ 网络错误', 3000); }
+}
 
   async function loadRemoteData(data, version) {
     appData = data;
