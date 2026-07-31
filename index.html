@@ -381,7 +381,6 @@
   let pendingDeleteAllData = null;
   let autoFitEnabled = false;
 
-  // 协同编辑相关
   let pendingOperations = [];
   let baseVersion = 0;
   let syncTimer = null;
@@ -419,7 +418,7 @@
   function findNodeById(node, id) { if (node.id === id) return node; if (node.children) for (const c of node.children) { const f = findNodeById(c, id); if (f) return f; } return null; }
   function findParentNode(root, targetId) { if (!root.children) return null; for (const c of root.children) { if (c.id === targetId) return root; const f = findParentNode(c, targetId); if (f) return f; } return null; }
 
-  // ==================== 操作日志与本地应用 ====================
+  // ---------- 操作日志 ----------
   function localApply(op) {
     const { action, payload } = op;
     switch (action) {
@@ -555,10 +554,9 @@
           await loadRemoteData(cloudData, cloudData._version || 0);
         }
       }
-    } catch (e) { /* 离线使用本地数据 */ }
+    } catch (e) { /* 离线 */ }
   }
 
-  // ==================== 数据加载 ====================
   function loadData() {
     const s = localStorage.getItem(STORAGE_KEY);
     if (s) {
@@ -603,7 +601,7 @@
     renderTree(); refreshDetailView(); updateFamilySelector();
   };
 
-  // ==================== 界面渲染 ====================
+  // ---------- 渲染 ----------
   function renderTree() {
     const treeRoot = document.getElementById('treeRoot'); treeRoot.innerHTML = '';
     const root = getCurrentRoot(); if (!root) { treeRoot.innerHTML = '<div style="padding:20px; color:#888;">暂无家族数据</div>'; return; }
@@ -754,7 +752,7 @@
     if (name) addOperation('deleteAttr', { memberId: node.id, attrName: name });
   }
 
-  // 删除成员（带撤销栏，操作日志）
+  // 删除成员（带撤销）
   function deleteSelectedMember(id) {
     const nid = id || selectedNodeId; if (!nid) return;
     const root = getCurrentRoot(); if (!root) return;
@@ -764,10 +762,8 @@
       if (parent) {
         const idx = parent.children.findIndex(c => c.id === nid);
         if (idx !== -1) {
-          // 移除节点并保存副本用于撤销
           const deletedNode = parent.children.splice(idx, 1)[0];
           pendingDelete = { node: JSON.parse(JSON.stringify(deletedNode)), parent };
-          // 记录操作日志并同步
           addOperation('deleteMember', { memberId: nid });
           if (selectedNodeId === nid) selectedNodeId = parent.id;
           showUndoBar(deletedNode, parent);
@@ -784,15 +780,13 @@
     document.getElementById('undoDeleteBtn').onclick = () => performUndo(bar);
   }
 
+  // 修改重点：撤销时不再手动push，只通过addOperation添加
   function performUndo(bar) {
     if (!pendingDelete) return;
     const { node: restoredNode, parent } = pendingDelete;
-    // 恢复节点到父节点
-    if (!parent.children) parent.children = [];
-    parent.children.push(restoredNode);
     pendingDelete = null;
     bar.remove();
-    // 生成 addChild 操作并同步
+    // 生成 addChild 操作，由 localApply 负责将节点加回父节点
     addOperation('addChild', { parentId: parent.id, node: restoredNode });
     showInfoBar('已撤销删除');
   }
@@ -805,7 +799,7 @@
     if (dur > 0) setTimeout(() => { if (bar.parentNode) bar.remove(); }, dur);
   }
 
-  // 排序、序言、家族管理等改用操作日志
+  // ---------- 排序、序言、家族管理 ----------
   function openSortDialog() {
     if (!selectedNodeId || !getCurrentRoot()) return;
     const node = findNodeById(getCurrentRoot(), selectedNodeId);
@@ -876,7 +870,7 @@
     });
   }
 
-  // 成员添加/编辑对话框改为操作日志
+  // 成员对话框
   function showMemberDialog(existing, parent) {
     const isEdit = !!existing;
     const node = existing || { name: '', attributes: [{ name:'性别', value:'男' }, { name:'出生日期', value:'' }, { name:'配偶', value:'' }, { name:'出生地', value:'' }, { name:'备注', value:'' }] };
@@ -985,7 +979,7 @@
     };
   }
 
-  // 关系图等保持不变
+  // 其他功能保持不变
   function updateViewModeButtons(m) { document.querySelectorAll('#viewModeBar button[data-mode]').forEach(b=>b.classList.remove('active')); const btn=document.querySelector(`#viewModeBar button[data-mode="${m}"]`); if(btn)btn.classList.add('active'); }
   function updateZoomButtons(){ document.getElementById('btnFitScreen').classList.toggle('active',autoFitEnabled); document.getElementById('btnOriginalSize').classList.toggle('active',!autoFitEnabled && currentScale===1); }
   function setViewMode(mode){ if(mode==='custom'){ showCustomRangeDialog((up,down)=>{customUp=up;customDown=down;relationViewMode='custom';updateViewModeButtons('custom');switchToRelation();}); return; } relationViewMode=mode; updateViewModeButtons(mode); switchToRelation(); }
@@ -1061,7 +1055,7 @@
     }).catch(err=>{ orgTree.style.transform=prevT; container.style.overflow=prevO; container.style.width=prevW; container.style.height=prevH; shadows.forEach(s=>s.n.style.boxShadow=s.bs); alert('导出失败:'+err); });
   }
 
-  // 搜索相关
+  // 搜索
   function openSearchDialog(){
     const overlay=document.createElement('div'); overlay.className='modal-overlay';
     overlay.innerHTML=`<div class="modal-dialog" style="width:450px;"><div class="modal-header">🔍 搜索</div><div class="modal-body"><div class="form-group"><label>关键字（空格分隔）</label><input type="text" id="searchInput" style="width:100%;padding:8px;"></div></div><div class="modal-footer"><button class="btn-cancel" id="searchCancel">取消</button><button class="btn-primary" id="searchOk">搜索</button></div></div>`;
@@ -1084,7 +1078,7 @@
     overlay.querySelectorAll('[data-id]').forEach(el=>el.addEventListener('click',()=>{ const id=el.dataset.id; overlay.remove(); const node=findNodeById(root,id); if(node){ let p=node; while(p){ const par=findParentNode(root,p.id); if(par) expandedNodeIds.add(par.id); p=par; } expandedNodeIds.add(node.id); selectNode(node.id); switchTab('properties'); } }));
   }
 
-  // 用户相关
+  // 用户
   async function loadUserInfo(){
     try{
       const res=await fetch('/api/auth/me');
