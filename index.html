@@ -432,8 +432,18 @@
   }
   function findNodeById(node, id) { if (node.id === id) return node; if (node.children) for (const c of node.children) { const f = findNodeById(c, id); if (f) return f; } return null; }
   function findParentNode(root, targetId) { if (!root.children) return null; for (const c of root.children) { if (c.id === targetId) return root; const f = findParentNode(c, targetId); if (f) return f; } return null; }
+  function getMaxGeneration(node) {
+    if (!node) return 0;
+    if (!node.children || node.children.length === 0) return 0;
+    let max = 0;
+    for (const child of node.children) {
+      const depth = getMaxGeneration(child);
+      if (depth > max) max = depth;
+    }
+    return max + 1;
+  }
 
-  // 操作日志
+  // ---------- 操作日志 ----------
   function localApply(op) {
     const { action, payload } = op;
     switch (action) {
@@ -494,7 +504,7 @@
     scheduleSync();
   }
 
-  // 同步调度
+  // ==================== 同步逻辑 ====================
   function scheduleSync() {
     if (syncTimer) clearTimeout(syncTimer);
     if (isUserEditing) {
@@ -504,105 +514,44 @@
     syncTimer = setTimeout(() => syncNow(), 1500);
   }
 
-  // 核心同步：带冲突重试
   async function syncNow() {
-    if (pendingOperations.length === 0) {
-      showInfoBar('没有需要同步的修改', 1500);
-      return;
-    }
-    const ops = [...pendingOperations]; // 复制操作列表
-    try {
-      await syncWithRetry(ops, 5); // 最多重试5次
-    } catch (e) {
-      showInfoBar(`❌ 同步失败: ${e.message}`, 3000);
-    }
-  }
-
-  async function syncWithRetry(ops, maxAttempts) {
-    let attempt = 0;
-    while (attempt < maxAttempts) {
-      attempt++;
+    if (pendingOperations.length === 0) return;
+    const ops = [...pendingOperations];
+    let success = false;
+    let retries = 3;
+    while (retries-- > 0 && !success) {
       try {
         const res = await fetch(CLOUD_API_URL, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ baseVersion, operations: ops })
+          body: JSON.stringify({ operations: ops })
         });
         if (res.ok) {
           const result = await res.json();
           baseVersion = result.version;
-          // 成功后才移除已提交的操作
           pendingOperations = pendingOperations.filter(op => !ops.includes(op));
           saveDataToLocal();
-          showInfoBar('✅ 已同步', 1500);
-          return;
+          success = true;
         } else if (res.status === 409) {
-          // 冲突处理：拉取最新数据，重放操作，更新版本
-          const conflict = await res.json();
-          appData = conflict.latestData;
-          baseVersion = conflict.latestVersion;
-          // 保留当前家族ID
-          const savedFamilyId = appData.currentFamilyId;
-          if (savedFamilyId && appData.families.some(f => f.id === savedFamilyId)) {
-            appData.currentFamilyId = savedFamilyId;
-          } else if (appData.families.length > 0) {
-            appData.currentFamilyId = appData.families[0].id;
-          } else {
-            appData.currentFamilyId = null;
-          }
-          selectedNodeId = null; expandedNodeIds.clear();
-          const root = getCurrentRoot(); if (root) expandedNodeIds.add(root.id);
-          // 在新数据上重放操作
-          for (const op of ops) localApply(op);
-          renderTree(); refreshDetailView(); updateFamilySelector(); saveDataToLocal();
-          // 随机延迟，避免多端同时重试碰撞
-          await new Promise(r => setTimeout(r, 200 + Math.random() * 500));
+          const err = await res.json();
+          showInfoBar(`❌ 同步失败: ${err.error}`, 3000);
+          pendingOperations = pendingOperations.filter(op => !ops.includes(op));
+          success = true;
         } else {
           const err = await res.json();
           throw new Error(err.error || '同步失败');
         }
       } catch (e) {
-        if (attempt >= maxAttempts) throw e;
-        // 网络错误，等待后重试
-        await new Promise(r => setTimeout(r, 500));
-      }
-    }
-    throw new Error('重试次数已用完，请稍后手动同步');
-  }
-
-  // 加载远程数据（保留家族ID）
-  async function loadRemoteData(data, version) {
-    const savedFamilyId = appData.currentFamilyId;
-    appData = data;
-    baseVersion = version;
-    pendingOperations = [];
-    selectedNodeId = null; expandedNodeIds.clear();
-    if (savedFamilyId && appData.families.some(f => f.id === savedFamilyId)) {
-      appData.currentFamilyId = savedFamilyId;
-    } else if (appData.families.length > 0) {
-      appData.currentFamilyId = appData.families[0].id;
-    } else {
-      appData.currentFamilyId = null;
-    }
-    const root = getCurrentRoot(); if (root) expandedNodeIds.add(root.id);
-    saveDataToLocal();
-    renderTree(); refreshDetailView(); updateFamilySelector();
-  }
-
-  // 初始化时从云端拉取
-  async function initialSyncFromCloud() {
-    try {
-      const res = await fetch(CLOUD_API_URL);
-      if (res.ok) {
-        const cloudData = await res.json();
-        if (cloudData.families && Array.isArray(cloudData.families)) {
-          await loadRemoteData(cloudData, cloudData._version || 0);
+        if (retries <= 0) {
+          showInfoBar(`❌ 同步失败: ${e.message}`, 3000);
+        } else {
+          await new Promise(r => setTimeout(r, 500));
         }
       }
-    } catch (e) { /* 离线 */ }
+    }
   }
 
-  // 本地加载
+  // ==================== 数据加载 ====================
   function loadData() {
     const s = localStorage.getItem(STORAGE_KEY);
     if (s) {
@@ -622,6 +571,36 @@
     }
     saveDataToLocal();
     updateFamilySelector();
+  }
+
+  async function loadRemoteData(data, version) {
+    const savedFamilyId = appData.currentFamilyId;
+    appData = data;
+    baseVersion = version;
+    pendingOperations = [];
+    selectedNodeId = null; expandedNodeIds.clear();
+    if (savedFamilyId && appData.families.some(f => f.id === savedFamilyId)) {
+      appData.currentFamilyId = savedFamilyId;
+    } else if (appData.families.length > 0) {
+      appData.currentFamilyId = appData.families[0].id;
+    } else {
+      appData.currentFamilyId = null;
+    }
+    const root = getCurrentRoot(); if (root) expandedNodeIds.add(root.id);
+    saveDataToLocal();
+    renderTree(); refreshDetailView(); updateFamilySelector();
+  }
+
+  async function initialSyncFromCloud() {
+    try {
+      const res = await fetch(CLOUD_API_URL);
+      if (res.ok) {
+        const cloudData = await res.json();
+        if (cloudData.families && Array.isArray(cloudData.families)) {
+          await loadRemoteData(cloudData, cloudData._version || 0);
+        }
+      }
+    } catch (e) { /* 离线 */ }
   }
 
   function updateFamilySelector() {
@@ -647,7 +626,7 @@
     renderTree(); refreshDetailView(); updateFamilySelector();
   };
 
-  // 渲染树
+  // ---------- 渲染 ----------
   function renderTree() {
     const treeRoot = document.getElementById('treeRoot'); treeRoot.innerHTML = '';
     const root = getCurrentRoot(); if (!root) { treeRoot.innerHTML = '<div style="padding:20px; color:#888;">暂无家族数据</div>'; return; }
@@ -875,7 +854,7 @@
     if (dur > 0) setTimeout(() => { if (bar.parentNode) bar.remove(); }, dur);
   }
 
-  // 排序、序言、家族管理等
+  // 排序、序言、家族管理
   function openSortDialog() {
     if (!selectedNodeId || !getCurrentRoot()) return;
     const node = findNodeById(getCurrentRoot(), selectedNodeId);
@@ -984,6 +963,7 @@
         const parentId = parent ? parent.id : (getCurrentRoot() ? getCurrentRoot().id : null);
         if (parentId) {
           addOperation('addChild', { parentId, node: newNode });
+          // 不自动选中新成员
           expandedNodeIds.add(parentId);
         }
       }
@@ -1058,7 +1038,7 @@
     };
   }
 
-  // 视图模式等
+  // 其他功能
   function updateViewModeButtons(m) { document.querySelectorAll('#viewModeBar button[data-mode]').forEach(b=>b.classList.remove('active')); const btn=document.querySelector(`#viewModeBar button[data-mode="${m}"]`); if(btn)btn.classList.add('active'); }
   function updateZoomButtons(){ document.getElementById('btnFitScreen').classList.toggle('active',autoFitEnabled); document.getElementById('btnOriginalSize').classList.toggle('active',!autoFitEnabled && currentScale===1); }
   function setViewMode(mode){ if(mode==='custom'){ showCustomRangeDialog((up,down)=>{customUp=up;customDown=down;relationViewMode='custom';updateViewModeButtons('custom');switchToRelation();}); return; } relationViewMode=mode; updateViewModeButtons(mode); switchToRelation(); }
@@ -1268,17 +1248,6 @@
   }
   function showHelp(){ alert('...'); }
 
-  function getMaxGeneration(node) {
-    if (!node) return 0;
-    if (!node.children || node.children.length === 0) return 0;
-    let max = 0;
-    for (const child of node.children) {
-      const depth = getMaxGeneration(child);
-      if (depth > max) max = depth;
-    }
-    return max + 1;
-  }
-
   function updateStatusBar(){
     const root=getCurrentRoot(), fam=getCurrentFamily();
     if(selectedNodeId && root){
@@ -1314,6 +1283,21 @@
       if(undoBtn) undoBtn.click();
       else{ const undoAll=document.getElementById('undoDeleteAllBtn'); if(undoAll) undoAll.click(); }
     }
+  });
+
+  // 编辑保护
+  document.addEventListener('focusin', (e) => {
+    if (e.target.matches('input, textarea, select')) {
+      isUserEditing = true;
+    }
+  });
+  document.addEventListener('focusout', () => {
+    setTimeout(() => {
+      if (!document.activeElement || !document.activeElement.matches('input, textarea, select')) {
+        isUserEditing = false;
+        scheduleSync();
+      }
+    }, 200);
   });
 
   async function loadFromCloud() {
