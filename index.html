@@ -116,12 +116,11 @@
       border-radius: 4px; display: flex; align-items: center; gap: 4px; font-size: 13px;
     }
     .tree-node:hover { background: var(--hover-bg); }
-    /* 修复：选中节点宽度自适应内容，确保蓝色背景覆盖整个姓名 */
     .tree-node.selected {
       background: var(--highlight-bg);
       color: var(--highlight-text);
       width: max-content;
-      min-width: calc(100% - 4px); /* 减去左右 margin，避免溢出 */
+      min-width: calc(100% - 4px);
     }
 
     .tree-arrow { width: 16px; height: 16px; font-size: 9px; display: inline-flex; align-items: center; justify-content: center; color: #555; }
@@ -1187,9 +1186,26 @@
   function updateStatusBar(){
     const root=getCurrentRoot(), fam=getCurrentFamily();
     if(selectedNodeId && root){
-      const node=findNodeById(root,selectedNodeId);
-      document.getElementById('statusPath').textContent = (node&&!node.isRoot) ? getNodePath(node).join(' > ') : (fam?fam.name:'族谱管理系统');
-    } else document.getElementById('statusPath').textContent = fam?fam.name:'族谱管理系统';
+      const node = findNodeById(root, selectedNodeId);
+      if(node && !node.isRoot){
+        // 构建祖先路径（不含根节点）
+        const ancestors = [];
+        let cur = node;
+        while(cur){
+          if(!cur.isRoot) ancestors.unshift({id: cur.id, name: cur.name});
+          cur = findParentNode(root, cur.id);
+        }
+        // 生成可点击的链接
+        const pathHtml = ancestors.map(a => 
+          `<a href="#" onclick="window.selectNode('${a.id}'); return false;" style="color:#0078d4; text-decoration:none; cursor:pointer;">${escapeHtml(a.name)}</a>`
+        ).join(' <span style="color:#888;">></span> ');
+        document.getElementById('statusPath').innerHTML = pathHtml;
+      } else {
+        document.getElementById('statusPath').textContent = fam ? fam.name : '族谱管理系统';
+      }
+    } else {
+      document.getElementById('statusPath').textContent = fam ? fam.name : '族谱管理系统';
+    }
     document.getElementById('statusCount').textContent = '共 '+(root?countMembers(root):0)+' 位成员';
   }
 
@@ -1254,6 +1270,7 @@
   window.showHelp=showHelp; window.handleFileImport=handleFileImport; window.switchTab=switchTab;
   window.switchFamily=switchFamily;
   window.syncToCloud=syncNow; window.loadFromCloud=loadFromCloud;
+  window.selectNode = selectNode;  // 暴露到全局，供状态栏链接使用
 })();
 </script>
 </body>
