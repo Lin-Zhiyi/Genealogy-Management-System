@@ -111,27 +111,18 @@
     .sash:hover, .sash.active { background: #0078d4; }
     .tree-panel { background: var(--bg-tree); overflow: auto; flex-shrink: 0; min-width: 180px; padding: 6px 0; }
 
-    /* 修复1：树节点高亮铺满整行 */
     .tree-node {
       cursor: pointer; white-space: nowrap; padding: 4px 8px 4px 4px; margin: 1px 2px;
       border-radius: 4px; display: flex; align-items: center; gap: 4px; font-size: 13px;
-      position: relative; overflow: visible; /* 新增 */
+      position: relative; overflow: visible;
     }
     .tree-node:hover { background: var(--hover-bg); }
+    /* 修复手机端选中高亮：使用 box-shadow 向两侧扩展，不产生重叠 */
     .tree-node.selected {
-      background: var(--highlight-bg); color: var(--highlight-text);
-    }
-    /* 通过伪元素让高亮向左右扩展，覆盖整个滚动区域 */
-    .tree-node.selected::before {
-      content: '';
-      position: absolute;
-      top: 0;
-      left: -2000px;
-      right: -2000px;
-      bottom: 0;
-      background: inherit;
-      z-index: -1;
-      border-radius: inherit;
+      background: var(--highlight-bg);
+      color: var(--highlight-text);
+      box-shadow: -2000px 0 0 0 var(--highlight-bg),
+                   2000px 0 0 0 var(--highlight-bg);
     }
 
     .tree-arrow { width: 16px; height: 16px; font-size: 9px; display: inline-flex; align-items: center; justify-content: center; color: #555; }
@@ -172,7 +163,7 @@
     .org-chart {
       flex: 1; overflow: auto; padding: 20px 30px; display: flex;
       justify-content: flex-start; align-items: flex-start; background: #ffffff; border-radius: 6px;
-      touch-action: none; /* 新增：防止浏览器默认手势干扰 */
+      touch-action: pan-x pan-y pinch-zoom;   /* 恢复单指滑动，同时允许双指缩放 */
     }
     .org-tree {
       display: inline-flex; flex-direction: column; align-items: center;
@@ -504,7 +495,10 @@
   }
 
   async function syncNow() {
-    if (pendingOperations.length === 0) return;
+    if (pendingOperations.length === 0) {
+      showInfoBar('没有需要同步的修改', 1500);
+      return;
+    }
     const ops = [...pendingOperations];
     try {
       const res = await fetch(CLOUD_API_URL, {
@@ -822,7 +816,7 @@
     if (dur > 0) setTimeout(() => { if (bar.parentNode) bar.remove(); }, dur);
   }
 
-  // 排序、序言、家族管理（保持不变）
+  // 排序、序言、家族管理
   function openSortDialog() {
     if (!selectedNodeId || !getCurrentRoot()) return;
     const node = findNodeById(getCurrentRoot(), selectedNodeId);
@@ -1040,7 +1034,6 @@
     function createCard(n,self,spouse=false){ 
       const card=document.createElement('div'); 
       card.className='org-node'+(spouse?' node-spouse':(self?' node-self':' node-other')); 
-      // 删除配偶小字“配偶”，仅显示名字和日期
       card.innerHTML=`<span class="node-name">${escapeHtml(n.name)}</span><span class="node-years">${getAttr(n,'出生日期')||''}</span>`; 
       card.onclick=()=>{ selectNode(n.id); switchTab('relation'); }; 
       return card; 
@@ -1064,7 +1057,7 @@
   function zoomReset(){ autoFitEnabled=false; currentScale=1; applyScale(); updateZoomButtons(); }
   function zoomToFit(){ const t=document.getElementById('orgTree'),c=document.getElementById('orgChartContainer'); if(!t||!c) return; currentScale=Math.min(1,(c.clientWidth-40)/t.scrollWidth); autoFitEnabled=true; applyScale(); updateZoomButtons(); }
 
-  // 手机端双指缩放（问题4）
+  // 手机端双指缩放 + 单指滑动
   function setupPinchZoom() {
     const container = document.getElementById('orgChartContainer');
     if (!container) return;
@@ -1124,7 +1117,7 @@
     }).catch(err=>{ orgTree.style.transform=prevT; container.style.overflow=prevO; container.style.width=prevW; container.style.height=prevH; shadows.forEach(s=>s.n.style.boxShadow=s.bs); alert('导出失败:'+err); });
   }
 
-  // 搜索（排除“简介”属性，问题2）
+  // 搜索（排除“简介”）
   function openSearchDialog(){
     const overlay=document.createElement('div'); overlay.className='modal-overlay';
     overlay.innerHTML=`<div class="modal-dialog" style="width:450px;"><div class="modal-header">🔍 搜索</div><div class="modal-body"><div class="form-group"><label>关键字（空格分隔）</label><input type="text" id="searchInput" style="width:100%;padding:8px;"></div></div><div class="modal-footer"><button class="btn-cancel" id="searchCancel">取消</button><button class="btn-primary" id="searchOk">搜索</button></div></div>`;
@@ -1137,7 +1130,6 @@
     const res=[]; const root=getCurrentRoot(); if(!root) return;
     function match(n){ 
       if(n.isRoot) return false; 
-      // 修改：过滤掉“简介”属性值
       const attrsValues = (n.attributes || []).filter(a => a.name !== '简介').map(a => a.value || '');
       const txt=[n.name,...attrsValues].join(' ').toLowerCase(); 
       return keys.every(k=>txt.includes(k.toLowerCase())); 
@@ -1238,7 +1230,7 @@
       updateFamilySelector();
     });
     loadUserInfo();
-    setupPinchZoom(); // 启动双指缩放
+    setupPinchZoom();
     window.addEventListener('beforeunload', uploadOnClose);
     document.querySelectorAll('.menu-item[data-menu]').forEach(item=>{
       const dd=item.querySelector('.dropdown-menu');
