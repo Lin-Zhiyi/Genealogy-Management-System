@@ -510,58 +510,7 @@
     } catch (e) { showInfoBar('❌ 网络错误', 3000); }
   }
 
-  // 冲突对话框：用户可选择加载最新、强制上传或取消
-  /*function showConflictDialog(ops, remoteData, remoteVersion) {
-    const overlay = document.createElement('div');
-    overlay.className = 'modal-overlay';
-    overlay.innerHTML = `
-      <div class="modal-dialog" style="width:400px;">
-        <div class="modal-header">⚠️ 数据冲突</div>
-        <div class="modal-body" style="text-align:center;">
-          <p>您有未同步的修改与云端冲突。</p>
-          <button id="loadRemoteBtn" class="btn-primary" style="margin:5px;">📥 加载最新（放弃本地修改）</button>
-          <button id="forceUploadBtn" class="btn-cancel" style="margin:5px;">⬆️ 强制上传（覆盖云端）</button>
-          <button id="cancelConflictBtn" class="btn-cancel" style="margin:5px;">取消</button>
-        </div>
-      </div>`;
-    document.body.appendChild(overlay);
-
-    document.getElementById('loadRemoteBtn').onclick = async () => {
-      overlay.remove();
-      await loadRemoteData(remoteData, remoteVersion);
-      showInfoBar('已加载最新云端数据', 3000);
-    };
-
-    document.getElementById('forceUploadBtn').onclick = async () => {
-      overlay.remove();
-      // 强制上传：使用 PUT 全量覆盖
-      const payload = JSON.parse(JSON.stringify(appData));
-      payload._forceOverwrite = true;
-      try {
-        const res = await fetch(CLOUD_API_URL, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
-        });
-        if (res.ok) {
-          const result = await res.json();
-          baseVersion = result.version;
-          pendingOperations = [];
-          saveDataToLocal();
-          showInfoBar('✅ 强制上传成功', 3000);
-        } else {
-          const err = await res.json();
-          showInfoBar(`❌ 强制上传失败: ${err.error}`, 3000);
-        }
-      } catch (e) { showInfoBar('❌ 网络错误', 3000); }
-    };
-
-    document.getElementById('cancelConflictBtn').onclick = () => {
-      overlay.remove();
-      // 保留本地未提交的操作，用户可稍后重试
-      showInfoBar('已取消同步，未提交的修改保留', 3000);
-    };
-  }*/
+  /*function showConflictDialog(ops, remoteData, remoteVersion) { ... }*/
 
   async function handleConflictAndRetry(ops, remoteData, remoteVersion) {
   appData = remoteData;
@@ -590,10 +539,20 @@
 }
 
   async function loadRemoteData(data, version) {
+    // 记住当前家族ID，避免加载云端数据后自动跳转到第一个家族
+    const savedFamilyId = appData.currentFamilyId;
     appData = data;
     baseVersion = version;
     pendingOperations = [];
     selectedNodeId = null; expandedNodeIds.clear();
+    // 恢复当前家族（如果在新数据中存在）
+    if (savedFamilyId && appData.families.some(f => f.id === savedFamilyId)) {
+      appData.currentFamilyId = savedFamilyId;
+    } else if (appData.families.length > 0) {
+      appData.currentFamilyId = appData.families[0].id;
+    } else {
+      appData.currentFamilyId = null;
+    }
     const root = getCurrentRoot(); if (root) expandedNodeIds.add(root.id);
     saveDataToLocal();
     renderTree(); refreshDetailView(); updateFamilySelector();
