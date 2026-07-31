@@ -656,7 +656,11 @@
   }
 
   function renderDetailPanel(node) {
-    document.getElementById('detailTitle').textContent = node ? '👤 ' + node.name : '请选择一个成员';
+    const gen = (node && !node.isRoot) ? getNodePath(node).length : 0;
+    document.getElementById('detailTitle').innerHTML = node
+      ? `👤 ${escapeHtml(node.name)}${gen > 0 ? `<span style="font-size:10px; color:#888; margin-left:6px;">(第${gen}代)</span>` : ''}`
+      : '请选择一个成员';
+    
     const detailPathEl = document.getElementById('detailPath');
     if (node && !node.isRoot) {
       const ancestors = [];
@@ -1019,7 +1023,11 @@
     overlay.querySelector('#okCustom').onclick=()=>{ let u=parseInt(document.getElementById('customUp').value)||0, d=parseInt(document.getElementById('customDown').value)||0; u=Math.min(9,Math.max(0,u)); d=Math.min(9,Math.max(0,d)); overlay.remove(); cb(u,d); };
   }
   function renderOrgChart(node){
-    document.getElementById('detailTitle').textContent = node ? '🏢 '+node.name : '请选择一个成员';
+    const gen = (node && !node.isRoot) ? getNodePath(node).length : 0;
+    document.getElementById('detailTitle').innerHTML = node
+      ? `🏢 ${escapeHtml(node.name)}${gen > 0 ? `<span style="font-size:10px; color:#888; margin-left:6px;">(第${gen}代)</span>` : ''}`
+      : '请选择一个成员';
+    
     document.getElementById('detailPath').textContent = (node && !node.isRoot) ? '代际: '+getNodePath(node).join(' > ') : '';
     const orgTree=document.getElementById('orgTree'), empty=document.getElementById('relationEmpty');
     orgTree.innerHTML=''; orgTree.style.display='none'; empty.style.display='flex';
