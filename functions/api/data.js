@@ -80,8 +80,7 @@ export async function onRequest(context) {
     switch (action) {
       case 'addChild': {
         const { parentId, node } = payload;
-        // 从 families 中查找父节点
-        const parent = findNodeInFamilies(root, parentId) || findNodeInTree(root, parentId); // root 也可能是树节点（兼容）
+        const parent = findNodeInFamilies(root, parentId) || findNodeInTree(root, parentId);
         if (!parent) throw new Error(`父节点 ${parentId} 不存在`);
         if (!parent.children) parent.children = [];
         parent.children.push(node);
@@ -196,42 +195,34 @@ export async function onRequest(context) {
     }
   }
 
-  // ========== PATCH（操作日志） ==========
+  // ========== PATCH（无版本检查，直接应用操作） ==========
   if (request.method === 'PATCH') {
     try {
-      const { baseVersion, operations } = await request.json();
+      const { operations } = await request.json(); // 不再需要 baseVersion
       if (!Array.isArray(operations)) throw new Error('operations 必须为数组');
 
       let current = await getCurrentData();
-      // 如果云端无数据，初始化空数据
       if (!current) {
         current = { families: [], _version: 0 };
       }
-      const serverVersion = current._version || 0;
 
-      if (baseVersion !== serverVersion) {
-        return new Response(JSON.stringify({
-          error: '版本冲突',
-          latestVersion: serverVersion,
-          latestData: current
-        }), { status: 409, headers });
-      }
-
+      // 依次应用所有操作
       for (let i = 0; i < operations.length; i++) {
         const op = operations[i];
         try {
           applyOperation(current, op);
         } catch (e) {
+          // 如果某个操作失败，返回错误，但之前成功的操作已经修改了 current，这可能导致不一致。
+          // 简单处理：返回失败，丢弃本次所有操作。
           return new Response(JSON.stringify({
             error: `操作${i}失败: ${e.message}`,
-            appliedCount: i,
-            latestVersion: serverVersion,
-            latestData: current
+            appliedCount: i
           }), { status: 409, headers });
         }
       }
 
-      current._version = serverVersion + 1;
+      // 递增版本
+      current._version = (current._version || 0) + 1;
       await saveData(current);
 
       return new Response(JSON.stringify({ success: true, version: current._version }), { headers });
