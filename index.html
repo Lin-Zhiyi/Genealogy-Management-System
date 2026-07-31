@@ -781,12 +781,7 @@
     });
     input.addEventListener('keydown', e => { if (e.key==='Enter' && fieldType!=='textarea') { e.preventDefault(); save(); } });
   }
-/*
-Test
-Test
-Test
-Rebuild!
-*/
+
   function startEditingCustom(tr, idx, node) {
     isUserEditing = true;
     const td = tr.querySelector('.col-data'); if (td.querySelector('input')) return;
