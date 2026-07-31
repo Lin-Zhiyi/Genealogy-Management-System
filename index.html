@@ -114,15 +114,19 @@
     .tree-node {
       cursor: pointer; white-space: nowrap; padding: 4px 8px 4px 4px; margin: 1px 2px;
       border-radius: 4px; display: flex; align-items: center; gap: 4px; font-size: 13px;
-      position: relative; overflow: visible;
+      position: relative;
     }
     .tree-node:hover { background: var(--hover-bg); }
-    /* 修复手机端选中高亮：使用 box-shadow 向两侧扩展，不产生重叠 */
     .tree-node.selected {
       background: var(--highlight-bg);
       color: var(--highlight-text);
-      box-shadow: -2000px 0 0 0 var(--highlight-bg),
-                   2000px 0 0 0 var(--highlight-bg);
+      /* 不再使用 box-shadow 扩展，而是让节点宽度自适应 */
+    }
+    /* 选中时让文本完整显示，节点宽度随内容撑开 */
+    .tree-node.selected .tree-label {
+      overflow: visible;
+      text-overflow: unset;
+      white-space: nowrap;
     }
 
     .tree-arrow { width: 16px; height: 16px; font-size: 9px; display: inline-flex; align-items: center; justify-content: center; color: #555; }
@@ -163,7 +167,7 @@
     .org-chart {
       flex: 1; overflow: auto; padding: 20px 30px; display: flex;
       justify-content: flex-start; align-items: flex-start; background: #ffffff; border-radius: 6px;
-      touch-action: pan-x pan-y pinch-zoom;   /* 恢复单指滑动，同时允许双指缩放 */
+      touch-action: pan-x pan-y pinch-zoom;
     }
     .org-tree {
       display: inline-flex; flex-direction: column; align-items: center;
@@ -1057,7 +1061,6 @@
   function zoomReset(){ autoFitEnabled=false; currentScale=1; applyScale(); updateZoomButtons(); }
   function zoomToFit(){ const t=document.getElementById('orgTree'),c=document.getElementById('orgChartContainer'); if(!t||!c) return; currentScale=Math.min(1,(c.clientWidth-40)/t.scrollWidth); autoFitEnabled=true; applyScale(); updateZoomButtons(); }
 
-  // 手机端双指缩放 + 单指滑动
   function setupPinchZoom() {
     const container = document.getElementById('orgChartContainer');
     if (!container) return;
