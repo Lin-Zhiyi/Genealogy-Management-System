@@ -447,7 +447,7 @@
     return max + 1;
   }
 
-  // ---------- 操作日志 ----------
+  // ---------- 操作日志（强制绑定当前家族）----------
   function localApply(op) {
     const root = getCurrentRoot();
     if (!root) return;
@@ -1521,7 +1521,7 @@
           if (res.ok) {
             alert('密码已重置');
             overlay.remove();
-            openAdminDialog(); // 刷新列表
+            openAdminDialog();
           } else {
             const err = await res.json();
             alert(err.error || '操作失败');
@@ -1541,7 +1541,7 @@
           if (res.ok) {
             alert('用户已删除');
             overlay.remove();
-            openAdminDialog(); // 刷新列表
+            openAdminDialog();
           } else {
             const err = await res.json();
             alert(err.error || '删除失败');
