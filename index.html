@@ -481,7 +481,7 @@
         const f = appData.families.find(f => f.id === payload.familyId);
         if (f) {
           f.name = payload.newName;
-          if (f.root) f.root.name = payload.newName; // 同步根节点名称
+          if (f.root) f.root.name = payload.newName; // 同步根节点名称，确保左侧树显示最新家族名
         }
         break;
       }
@@ -1072,7 +1072,6 @@
   }
 
   function showContextMenu(x, y, node) {
-    // 右键菜单先显示，但点击具体项时会进行权限检查
     const menu = document.getElementById('contextMenu');
     menu.style.left = x + 'px';
     menu.style.top = y + 'px';
@@ -1511,10 +1510,15 @@
     if (currentUserRole === 'viewer') return false;
     if (currentUserRole === 'editor') {
       const username = document.getElementById('usernameDisplay').textContent.split(' ')[0];
+      // 本人
       if (node.name === username) return true;
+      // 父亲：判断该节点的子节点中是否有名字等于 username 的（即该节点是 username 的父亲）
+      if (node.children) {
+        const isParent = node.children.some(child => child.name === username);
+        if (isParent) return true;
+      }
+      // 直系后代：该节点的某个祖先的名字是 username
       const root = getCurrentRoot();
-      const parent = findParentNode(root, node.id);
-      if (parent && !parent.isRoot && parent.name === username) return true;
       let cur = node;
       while (cur) {
         const p = findParentNode(root, cur.id);
