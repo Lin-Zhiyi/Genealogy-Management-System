@@ -1369,7 +1369,7 @@
 
   // ==================== 分割线拖拽 ====================
   function setupSash() {
-    // 移动端不启用拖拽（sash 在 mobile-layout 下已隐藏）
+    // 移动端不启用拖拽
     if (document.body.classList.contains('mobile-layout')) return;
 
     const sash = document.getElementById('sash');
@@ -1385,11 +1385,9 @@
       e.preventDefault();
       const dx = e.clientX - startX;
       let newWidth = startWidth + dx;
-      // 限制最小宽度 180px，最大不超过 mainBody 宽度的一半
-      const maxWidth = mainBody.clientWidth / 2;
-      newWidth = Math.max(180, Math.min(newWidth, maxWidth));
+      // 仅限制最小宽度 180px，不限制最大宽度
+      newWidth = Math.max(180, newWidth);
       treePanel.style.width = newWidth + 'px';
-      // 标记 sash 为活动状态
       sash.classList.add('active');
     }
 
