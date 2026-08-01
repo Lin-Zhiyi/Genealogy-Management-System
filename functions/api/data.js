@@ -42,7 +42,7 @@ export async function onRequest(context) {
     return new Response(JSON.stringify({ error: 'KV 未绑定' }), { status: 500, headers });
   }
 
-  // 全局共享键名
+  // 全局共享键名（所有用户共用一份族谱）
   const kvKey = 'family-data';
   const backupListKey = 'family-data-backup-list';
   const backupLastTimeKey = 'family-data-backup-lasttime';
@@ -125,7 +125,6 @@ export async function onRequest(context) {
     return null;
   }
 
-  // 查找姓名等于指定值的成员（排除根节点）
   function findMemberByName(node, name) {
     if (!node.isRoot && node.name === name) return node;
     if (node.children) {
@@ -137,7 +136,6 @@ export async function onRequest(context) {
     return null;
   }
 
-  // 收集所有后代节点ID
   function addDescendants(node, set) {
     if (node.children) {
       for (const child of node.children) {
@@ -156,12 +154,11 @@ export async function onRequest(context) {
       if (member) {
         editable.add(member.id); // 本人
         addDescendants(member, editable); // 所有后代
-        // 父亲
         const parent = findParentInTree(fam.root, member.id);
         if (parent && !parent.isRoot) {
           editable.add(parent.id);
         }
-        break; // 只处理第一个匹配
+        break;
       }
     }
     return editable;
@@ -170,9 +167,8 @@ export async function onRequest(context) {
   // 权限校验
   function checkPermission(data, username, role, action, payload) {
     if (role === 'admin') return true;
-    if (role === 'viewer') return false; // 浏览用户无任何编辑权限
+    if (role === 'viewer') return false;
 
-    // 编辑用户
     if (role === 'editor') {
       switch (action) {
         case 'addFamily':
@@ -186,22 +182,26 @@ export async function onRequest(context) {
           return editableIds.has(payload.parentId);
         }
         case 'deleteMember': {
-          // 只能删除本人或后代，不能删除父亲
-          const editableIds = getEditableNodeIds(data, username);
-          if (!editableIds.has(payload.memberId)) return false;
-          // 检查要删除的节点是不是“父亲”（即其姓名等于用户名且父亲节点）
+          // 只能删除本人或直系后代，不能删除父亲
           const member = findNodeInFamilies(data, payload.memberId);
           if (!member) return false;
+
+          // 检查是否在可编辑集合中（可编辑集合包含本人、后代、父亲）
+          const editableIds = getEditableNodeIds(data, username);
+          if (!editableIds.has(payload.memberId)) return false;
+
+          // 如果是父亲节点，禁止删除（父亲是可编辑的但不可删除）
           const parent = findParentInFamilies(data, payload.memberId);
-          if (parent && !parent.isRoot && parent.name === username) {
-            // 父亲不能删除
-            // 但注意：用户本人的父亲也可能被误判，需要判断 member 是否是用户本人？
-            // 简单判断：如果被删除节点的父节点姓名等于 username，且被删除节点不是用户本人，则不允许删除
-            // 然而本人也可能有父亲（即用户的父亲），用户不能删除自己的父亲，但可以删除自己？
-            // 我们允许删除本人和后代，禁止删除父亲。判断条件：若 payload.memberId 对应的节点的父节点姓名等于 username，且该节点不是用户本人，则拒绝。
-            const selfNode = findMemberByName(data, username);
-            if (selfNode && payload.memberId !== selfNode.id) {
-              return false;
+          if (parent && !parent.isRoot && parent.name === username && payload.memberId !== memberOfName(data, username)?.id) {
+            return false;
+          }
+          // 更精确判断：查找用户本人节点，若被删除节点不是用户本人且其父节点姓名等于用户名，则不允许删除（因为那是父亲或父亲的其它子女？父亲其它子女不应该可编辑？按需求父亲只能编辑其本人和其父亲？不对，需求规定只能编辑本人、直系后代、父亲，所以父亲节点下的其他子女（即用户的兄弟姐妹）不在可编辑范围内，因此不会被包含在 editableIds 中，所以这里主要防止删除父亲本人。
+          // 简化：获取用户本人节点ID，如果被删除节点ID等于父亲的ID（即父亲节点），则拒绝。
+          const self = findMemberByName(data, username);
+          if (self) {
+            const father = findParentInFamilies(data, self.id);
+            if (father && payload.memberId === father.id) {
+              return false; // 不允许删除父亲
             }
           }
           return true;
@@ -223,7 +223,16 @@ export async function onRequest(context) {
     return false;
   }
 
-  // 操作执行（带权限）
+  // 辅助：获取姓名对应的成员节点（用于删除权限判断）
+  function memberOfName(data, name) {
+    if (!data || !data.families) return null;
+    for (const fam of data.families) {
+      const found = findMemberByName(fam.root, name);
+      if (found) return found;
+    }
+    return null;
+  }
+
   function applyOperation(root, op, username, role) {
     const { action, payload } = op;
     if (!checkPermission(root, username, role, action, payload)) {
