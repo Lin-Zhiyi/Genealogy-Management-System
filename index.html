@@ -506,24 +506,33 @@
   }
 
   function addOperation(action, payload) {
-    const requiresRoot = ['addChild','deleteMember','setAttr','setName','deleteAttr','reorderChildren'];
-    if (requiresRoot.includes(action) && !getCurrentRoot()) {
+  const requiresRoot = ['addChild','deleteMember','setAttr','setName','deleteAttr','reorderChildren'];
+  if (requiresRoot.includes(action)) {
+    if (!getCurrentRoot()) {
       alert('请先选择一个家族');
       return;
     }
-
-    const op = { action, payload };
-    localApply(op);
-    pendingOperations.push(op);
-    renderTree();
-    refreshDetailView();
-    updateFamilySelector();
-    updateStatusBar();
-    saveDataToLocal();
-    scheduleSync();
-    localStorage.setItem('has_pending_changes', '1');
+    // 附加当前家族ID，确保操作与家族绑定
+    if (!payload.familyId) payload.familyId = appData.currentFamilyId;
   }
 
+  const op = { action, payload };
+  if (!localApply(op)) {
+    if (requiresRoot.includes(action)) {
+      alert('操作失败，请刷新页面后重试');
+    }
+    return;
+  }
+
+  pendingOperations.push(op);
+  renderTree();
+  refreshDetailView();
+  updateFamilySelector();
+  updateStatusBar();
+  saveDataToLocal();
+  scheduleSync();
+  localStorage.setItem('has_pending_changes', '1');
+}
   // ==================== 同步逻辑 ====================
   function scheduleSync() {
     if (syncTimer) clearTimeout(syncTimer);
