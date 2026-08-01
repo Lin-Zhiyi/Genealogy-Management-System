@@ -3,10 +3,6 @@ export async function onRequest(context) {
   const { request, env } = context;
   const url = new URL(request.url);
 
-  if (!url.pathname.startsWith('/api/admin')) {
-    return new Response('Not found', { status: 404 });
-  }
-
   // 验证管理员权限
   const tokenPayload = await getUserFromCookie(request, env.JWT_SECRET);
   if (!tokenPayload || tokenPayload.role !== 'admin') {
@@ -16,7 +12,7 @@ export async function onRequest(context) {
     });
   }
 
-  // 获取用户列表（非admin）
+  // 获取非管理员用户列表
   if (url.pathname === '/api/admin/users' && request.method === 'GET') {
     try {
       const list = await env.USER_KV.list({ prefix: 'user:' });
@@ -38,7 +34,7 @@ export async function onRequest(context) {
     }
   }
 
-  // 重置密码
+  // 重置密码为 123456
   if (url.pathname === '/api/admin/reset-password' && request.method === 'POST') {
     try {
       const body = await request.json();
@@ -55,7 +51,7 @@ export async function onRequest(context) {
       if (user.role === 'admin') {
         return new Response(JSON.stringify({ error: '不能重置管理员密码' }), { status: 403 });
       }
-      // 重置为 123456 的哈希
+      // 重置密码为 123456
       const salt = generateSalt();
       const hash = await sha512(salt + '123456');
       user.password = `${salt}:${hash}`;
@@ -71,7 +67,7 @@ export async function onRequest(context) {
   return new Response('Method not allowed', { status: 405 });
 }
 
-// 工具函数（与登录/注册保持一致）
+// ---------- 工具函数（与登录/注册保持一致）----------
 async function sha512(message) {
   const encoder = new TextEncoder();
   const data = encoder.encode(message);
