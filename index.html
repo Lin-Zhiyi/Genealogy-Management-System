@@ -447,57 +447,56 @@
     return max + 1;
   }
 
-  // ---------- 操作日志（强制绑定当前家族）----------
+  // ========== 核心重构：操作日志（强制绑定当前家族） ==========
   function localApply(op) {
     const root = getCurrentRoot();
-    if (!root) return;
+    if (!root) return false;
     const { action, payload } = op;
     switch (action) {
       case 'addChild': {
         const parent = findNodeById(root, payload.parentId);
-        if (parent) { if (!parent.children) parent.children = []; parent.children.push(payload.node); }
-        break;
+        if (parent) { if (!parent.children) parent.children = []; parent.children.push(payload.node); return true; }
+        return false;
       }
       case 'deleteMember': {
         const parent = findParentNode(root, payload.memberId);
-        if (parent) { const idx = parent.children.findIndex(c => c.id === payload.memberId); if (idx !== -1) parent.children.splice(idx, 1); }
-        break;
+        if (parent) { const idx = parent.children.findIndex(c => c.id === payload.memberId); if (idx !== -1) { parent.children.splice(idx, 1); return true; } }
+        return false;
       }
       case 'setAttr': {
         const node = findNodeById(root, payload.memberId);
-        if (node) { if (!node.attributes) node.attributes = []; const a = node.attributes.find(a => a.name === payload.attrName); if (a) a.value = payload.value; else node.attributes.push({ name: payload.attrName, value: payload.value }); }
-        break;
+        if (node) { if (!node.attributes) node.attributes = []; const a = node.attributes.find(a => a.name === payload.attrName); if (a) a.value = payload.value; else node.attributes.push({ name: payload.attrName, value: payload.value }); return true; }
+        return false;
       }
       case 'setName': {
         const node = findNodeById(root, payload.memberId);
-        if (node) node.name = payload.newName;
-        break;
+        if (node) { node.name = payload.newName; return true; }
+        return false;
       }
       case 'deleteAttr': {
         const node = findNodeById(root, payload.memberId);
-        if (node && node.attributes) node.attributes = node.attributes.filter(a => a.name !== payload.attrName);
-        break;
+        if (node && node.attributes) { node.attributes = node.attributes.filter(a => a.name !== payload.attrName); return true; }
+        return false;
       }
-      case 'addFamily': { appData.families.push(payload.family); break; }
-      case 'deleteFamily': { appData.families = appData.families.filter(f => f.id !== payload.familyId); break; }
+      case 'addFamily': { appData.families.push(payload.family); return true; }
+      case 'deleteFamily': { appData.families = appData.families.filter(f => f.id !== payload.familyId); return true; }
       case 'renameFamily': {
         const f = appData.families.find(f => f.id === payload.familyId);
-        if (f) {
-          f.name = payload.newName;
-          if (f.root) f.root.name = payload.newName;
-        }
-        break;
+        if (f) { f.name = payload.newName; if (f.root) f.root.name = payload.newName; return true; }
+        return false;
       }
-      case 'setFamilyPreface': { const f = appData.families.find(f => f.id === payload.familyId); if (f) f.preface = payload.preface; break; }
+      case 'setFamilyPreface': { const f = appData.families.find(f => f.id === payload.familyId); if (f) { f.preface = payload.preface; return true; } return false; }
       case 'reorderChildren': {
         const parent = findNodeById(root, payload.parentId);
         if (parent && parent.children) {
           const reordered = []; for (const id of payload.newOrder) { const child = parent.children.find(c => c.id === id); if (child) reordered.push(child); }
           parent.children = reordered;
+          return true;
         }
-        break;
+        return false;
       }
     }
+    return false;
   }
 
   function saveDataToLocal() {
@@ -506,33 +505,35 @@
   }
 
   function addOperation(action, payload) {
-  const requiresRoot = ['addChild','deleteMember','setAttr','setName','deleteAttr','reorderChildren'];
-  if (requiresRoot.includes(action)) {
-    if (!getCurrentRoot()) {
-      alert('请先选择一个家族');
+    // 对于需要家族根节点的操作，必须确保当前有家族
+    const requiresRoot = ['addChild','deleteMember','setAttr','setName','deleteAttr','reorderChildren'];
+    if (requiresRoot.includes(action)) {
+      if (!getCurrentRoot()) {
+        alert('请先选择一个家族');
+        return;
+      }
+      // 附加当前家族ID
+      if (!payload.familyId) payload.familyId = appData.currentFamilyId;
+    }
+
+    const op = { action, payload };
+    if (!localApply(op)) {
+      if (requiresRoot.includes(action)) {
+        alert('操作失败，请刷新页面后重试');
+      }
       return;
     }
-    // 附加当前家族ID，确保操作与家族绑定
-    if (!payload.familyId) payload.familyId = appData.currentFamilyId;
+
+    pendingOperations.push(op);
+    renderTree();
+    refreshDetailView();
+    updateFamilySelector();
+    updateStatusBar();
+    saveDataToLocal();
+    scheduleSync();
+    localStorage.setItem('has_pending_changes', '1');
   }
 
-  const op = { action, payload };
-  if (!localApply(op)) {
-    if (requiresRoot.includes(action)) {
-      alert('操作失败，请刷新页面后重试');
-    }
-    return;
-  }
-
-  pendingOperations.push(op);
-  renderTree();
-  refreshDetailView();
-  updateFamilySelector();
-  updateStatusBar();
-  saveDataToLocal();
-  scheduleSync();
-  localStorage.setItem('has_pending_changes', '1');
-}
   // ==================== 同步逻辑 ====================
   function scheduleSync() {
     if (syncTimer) clearTimeout(syncTimer);
@@ -675,23 +676,19 @@
     });
   }
 
+  // 重构：切换家族前强制同步
   window.switchFamily = async function(familyId) {
-  if (!familyId || familyId === appData.currentFamilyId) return;
-  // 切换前强制同步当前家族的操作
-  if (pendingOperations.length > 0) {
-    await syncNow();
-  }
-  // 清空选中与展开状态
-  appData.currentFamilyId = familyId;
-  selectedNodeId = null;
-  expandedNodeIds.clear();
-  const root = getCurrentRoot();
-  if (root) expandedNodeIds.add(root.id);
-  saveDataToLocal();
-  renderTree();
-  refreshDetailView();
-  updateFamilySelector();
-};
+    if (!familyId || familyId === appData.currentFamilyId) return;
+    // 强制同步当前待处理操作
+    if (pendingOperations.length > 0) {
+      await syncNow();
+    }
+    appData.currentFamilyId = familyId;
+    selectedNodeId = null; expandedNodeIds.clear();
+    const root = getCurrentRoot(); if (root) expandedNodeIds.add(root.id);
+    saveDataToLocal();
+    renderTree(); refreshDetailView(); updateFamilySelector();
+  };
 
   // ---------- 渲染 ----------
   function renderTree() {
@@ -1130,7 +1127,6 @@
         hasVisible = true;
         return;
       }
-      // 编辑用户
       if (action.includes('addChildMember') || action.includes('addAttribute') || action.includes('deleteSelectedMember')) {
         if (canEditNode(node)) {
           item.style.display = '';
@@ -1527,7 +1523,6 @@
 
       overlay.querySelector('#closeAdmin').onclick = () => overlay.remove();
 
-      // 重置密码
       overlay.querySelectorAll('.resetPwdBtn').forEach(btn => {
         btn.onclick = async () => {
           if (!confirm(`确定要将用户 ${btn.dataset.username} 的密码重置为 123456 吗？`)) return;
@@ -1547,7 +1542,6 @@
         };
       });
 
-      // 删除用户
       overlay.querySelectorAll('.deleteUserBtn').forEach(btn => {
         btn.onclick = async () => {
           if (!confirm(`确定要删除用户 ${btn.dataset.username} 吗？此操作不可恢复！`)) return;
