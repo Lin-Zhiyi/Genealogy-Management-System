@@ -351,7 +351,7 @@
             <span>缩放：</span><button onclick="zoomIn()">➕</button><button onclick="zoomOut()">➖</button>
             <button onclick="zoomToFit()" id="btnFitScreen">适应屏幕</button>
             <button onclick="zoomReset()" id="btnOriginalSize">原始尺寸</button>
-            <button id="btnExportChart2" onclick="exportChartImage()" title="导出完整辈分关系图" style="display:none;"></button> <!-- 隐藏的备用按钮，实际用工具栏的 -->
+            <button onclick="exportChartImage()" title="导出完整辈分关系图" style="display:none;">📷 导出图片</button>
           </div>
         </div>
         <div class="org-chart" id="orgChartContainer">
@@ -401,7 +401,7 @@
   let baseVersion = 0;
   let syncTimer = null;
   let isUserEditing = false;
-  let currentUserRole = 'viewer'; // 新增角色
+  let currentUserRole = 'viewer';
 
   if (/Mobi|Android/i.test(navigator.userAgent)) document.body.classList.add('mobile-layout');
 
@@ -688,7 +688,7 @@
     refreshDetailView();
     renderTree();
     updateStatusBar();
-    refreshEditButtons(); // 更新编辑按钮状态
+    refreshEditButtons();
   }
 
   function refreshDetailView() {
@@ -753,6 +753,8 @@
       const tdData = tr.querySelector('.col-data');
       if (f.editable !== false) {
         tdData.addEventListener('dblclick', () => {
+          // 权限检查：无编辑权限则不能弹出编辑框
+          if (!canEditNode(node)) return;
           if (f.isHtml) return;
           if (f.customIdx !== undefined) startEditingCustom(tr, f.customIdx, node);
           else startEditing(tr, f.name, node, f.attr, f.type);
@@ -1446,19 +1448,14 @@
   // ==================== 角色权限控制 ====================
   function applyRolePermissions() {
     const isAdmin = (currentUserRole === 'admin');
-    // 文件菜单
     const menuFile = document.getElementById('menuFile');
     if (menuFile) menuFile.style.display = isAdmin ? '' : 'none';
-    // 备份管理
     const menuBackup = document.getElementById('menuBackup');
     if (menuBackup) menuBackup.style.display = isAdmin ? '' : 'none';
-    // 序言按钮
     const btnPreface = document.getElementById('btnPreface');
     if (btnPreface) btnPreface.style.display = isAdmin ? '' : 'none';
-    // 导出关系图按钮
     const btnExportChart = document.getElementById('btnExportChart');
     if (btnExportChart) btnExportChart.style.display = isAdmin ? '' : 'none';
-    // 编辑按钮：浏览用户全部禁用；编辑用户根据选中节点启用；管理员全部启用
     refreshEditButtons();
   }
 
