@@ -447,10 +447,10 @@
     return max + 1;
   }
 
-  // ---------- 操作日志（加固）----------
+  // ---------- 操作日志 ----------
   function localApply(op) {
     const root = getCurrentRoot();
-    if (!root) return;   // 无家族时忽略所有成员操作
+    if (!root) return;
     const { action, payload } = op;
     switch (action) {
       case 'addChild': {
@@ -506,7 +506,6 @@
   }
 
   function addOperation(action, payload) {
-    // 对于需要家族根节点的操作，必须确保当前有家族
     const requiresRoot = ['addChild','deleteMember','setAttr','setName','deleteAttr','reorderChildren'];
     if (requiresRoot.includes(action) && !getCurrentRoot()) {
       alert('请先选择一个家族');
@@ -514,7 +513,7 @@
     }
 
     const op = { action, payload };
-    localApply(op);   // 内部已有 root 检查，无家族时直接返回
+    localApply(op);
     pendingOperations.push(op);
     renderTree();
     refreshDetailView();
@@ -1091,13 +1090,16 @@
     overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
   }
 
+  // ---------- 右键菜单（修复空白条）----------
   function showContextMenu(x, y, node) {
     const menu = document.getElementById('contextMenu');
     menu.style.left = x + 'px';
     menu.style.top = y + 'px';
+
     const items = menu.querySelectorAll('.cm-item');
     const isAdmin = (currentUserRole === 'admin');
     const isViewer = (currentUserRole === 'viewer');
+    let hasVisible = false;
 
     items.forEach(item => {
       const action = item.getAttribute('onclick');
@@ -1107,14 +1109,33 @@
       }
       if (isAdmin) {
         item.style.display = '';
+        hasVisible = true;
         return;
       }
+      // 编辑用户
       if (action.includes('addChildMember') || action.includes('addAttribute') || action.includes('deleteSelectedMember')) {
-        item.style.display = canEditNode(node) ? '' : 'none';
+        if (canEditNode(node)) {
+          item.style.display = '';
+          hasVisible = true;
+        } else {
+          item.style.display = 'none';
+        }
       } else if (action.includes('addSiblingMember')) {
-        item.style.display = canAddSibling(node) ? '' : 'none';
+        if (canAddSibling(node)) {
+          item.style.display = '';
+          hasVisible = true;
+        } else {
+          item.style.display = 'none';
+        }
+      } else {
+        item.style.display = 'none';
       }
     });
+
+    if (!hasVisible) {
+      menu.classList.remove('show');
+      return;
+    }
     menu.classList.add('show');
   }
   document.addEventListener('click', () => document.getElementById('contextMenu').classList.remove('show'));
@@ -1463,7 +1484,7 @@
     }
   }
 
-  // ---------- 用户管理（仅管理员）----------
+  // ---------- 用户管理（增加删除功能）----------
   async function openAdminDialog() {
     try {
       const res = await fetch('/api/admin/users');
@@ -1477,13 +1498,18 @@
         ? '<div style="padding:20px;text-align:center;">暂无其他用户</div>'
         : users.map(u => `<div style="display:flex;justify-content:space-between;padding:8px;border-bottom:1px solid #eee;">
             <span>${escapeHtml(u.username)} (${u.role === 'editor' ? '编辑用户' : '浏览用户'})</span>
-            <button class="resetPwdBtn btn-primary" data-username="${escapeHtml(u.username)}" style="padding:4px 12px;">重置密码</button>
+            <div>
+              <button class="resetPwdBtn btn-primary" data-username="${escapeHtml(u.username)}" style="padding:4px 12px;margin-right:4px;">重置密码</button>
+              <button class="deleteUserBtn btn-primary" data-username="${escapeHtml(u.username)}" style="padding:4px 12px;background:#c42b1c;border-color:#a0301c;">删除</button>
+            </div>
           </div>`).join('');
 
       overlay.innerHTML = `<div class="modal-dialog"><div class="modal-header">用户管理</div><div class="modal-body">${listHtml}</div><div class="modal-footer"><button class="btn-cancel" id="closeAdmin">关闭</button></div></div>`;
       document.body.appendChild(overlay);
 
       overlay.querySelector('#closeAdmin').onclick = () => overlay.remove();
+
+      // 重置密码
       overlay.querySelectorAll('.resetPwdBtn').forEach(btn => {
         btn.onclick = async () => {
           if (!confirm(`确定要将用户 ${btn.dataset.username} 的密码重置为 123456 吗？`)) return;
@@ -1495,12 +1521,34 @@
           if (res.ok) {
             alert('密码已重置');
             overlay.remove();
+            openAdminDialog(); // 刷新列表
           } else {
             const err = await res.json();
             alert(err.error || '操作失败');
           }
         };
       });
+
+      // 删除用户
+      overlay.querySelectorAll('.deleteUserBtn').forEach(btn => {
+        btn.onclick = async () => {
+          if (!confirm(`确定要删除用户 ${btn.dataset.username} 吗？此操作不可恢复！`)) return;
+          const res = await fetch('/api/admin/delete-user', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username: btn.dataset.username })
+          });
+          if (res.ok) {
+            alert('用户已删除');
+            overlay.remove();
+            openAdminDialog(); // 刷新列表
+          } else {
+            const err = await res.json();
+            alert(err.error || '删除失败');
+          }
+        };
+      });
+
       overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
     } catch (e) {
       alert('请求失败：' + e.message);
