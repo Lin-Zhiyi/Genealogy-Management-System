@@ -448,10 +448,9 @@
   }
 
   // ---------- 操作日志 ----------
-  // 修复跨家族 bug：必须基于当前家族根节点操作，不使用 appData 作为后备
   function localApply(op) {
     const root = getCurrentRoot();
-    if (!root) return; // 无家族时忽略操作
+    if (!root) return;
     const { action, payload } = op;
     switch (action) {
       case 'addChild': {
@@ -556,10 +555,8 @@
             const cloudRes = await fetch(CLOUD_API_URL);
             if (cloudRes.ok) {
               const cloudData = await cloudRes.json();
-              // 记录当前家族ID，避免被覆盖后丢失
               const currentFamId = appData.currentFamilyId;
               loadRemoteData(cloudData, cloudData._version || 0);
-              // 如果云端仍有该家族，保持选中；否则回到第一个家族
               if (currentFamId && appData.families.some(f => f.id === currentFamId)) {
                 appData.currentFamilyId = currentFamId;
               }
@@ -846,7 +843,7 @@
 
   // ---------- 编辑操作（权限校验）----------
   function ensureEditPermission(node) {
-    if (!node || node.isRoot) { alert('请先选择一个成员'); return false; }
+    if (!node) { alert('请先选择一个成员'); return false; }
     if (!canEditNode(node)) { alert('您没有编辑该成员的权限'); return false; }
     return true;
   }
@@ -907,7 +904,6 @@
     const n = findNodeById(root, nid);
     if (!ensureEditPermission(n)) return;
     if (n.isRoot) return;
-    // 编辑用户不能在父亲节点上添加兄弟
     if (currentUserRole === 'editor' && isFatherOfCurrentUser(n)) {
       alert('您只能为本人或直系后代添加兄弟');
       return;
@@ -1104,7 +1100,6 @@
         item.style.display = '';
         return;
       }
-      // 编辑用户
       if (action.includes('addChildMember') || action.includes('addAttribute') || action.includes('deleteSelectedMember')) {
         item.style.display = canEditNode(node) ? '' : 'none';
       } else if (action.includes('addSiblingMember')) {
@@ -1685,7 +1680,11 @@
     } catch (e) { showInfoBar(`❌ 网络错误: ${e.message}`, 3000); }
   }
 
-  function init(){
+  async function init(){
+    // 先加载用户信息，确保角色在渲染前就绪
+    await loadUserInfo();
+    applyRolePermissions();
+
     loadData();
     initialSyncFromCloud().then(() => {
       const root = getCurrentRoot();
@@ -1694,9 +1693,7 @@
       updateStatusBar();
       updateFamilySelector();
     });
-    loadUserInfo().then(() => {
-      applyRolePermissions();
-    });
+
     setupPinchZoom();
     setupSash();
     window.addEventListener('beforeunload', uploadOnClose);
