@@ -447,57 +447,60 @@
     return max + 1;
   }
 
-  // ---------- 操作日志 ----------
+  // ---------- 操作日志（加固版）----------
   function localApply(op) {
     const root = getCurrentRoot();
-    if (!root) return;
+    if (!root) return false;
     const { action, payload } = op;
     switch (action) {
       case 'addChild': {
         const parent = findNodeById(root, payload.parentId);
-        if (parent) { if (!parent.children) parent.children = []; parent.children.push(payload.node); }
-        break;
+        if (parent) { if (!parent.children) parent.children = []; parent.children.push(payload.node); return true; }
+        return false;
       }
       case 'deleteMember': {
         const parent = findParentNode(root, payload.memberId);
-        if (parent) { const idx = parent.children.findIndex(c => c.id === payload.memberId); if (idx !== -1) parent.children.splice(idx, 1); }
-        break;
+        if (parent) { const idx = parent.children.findIndex(c => c.id === payload.memberId); if (idx !== -1) { parent.children.splice(idx, 1); return true; } }
+        return false;
       }
       case 'setAttr': {
         const node = findNodeById(root, payload.memberId);
-        if (node) { if (!node.attributes) node.attributes = []; const a = node.attributes.find(a => a.name === payload.attrName); if (a) a.value = payload.value; else node.attributes.push({ name: payload.attrName, value: payload.value }); }
-        break;
+        if (node) { if (!node.attributes) node.attributes = []; const a = node.attributes.find(a => a.name === payload.attrName); if (a) a.value = payload.value; else node.attributes.push({ name: payload.attrName, value: payload.value }); return true; }
+        return false;
       }
       case 'setName': {
         const node = findNodeById(root, payload.memberId);
-        if (node) node.name = payload.newName;
-        break;
+        if (node) { node.name = payload.newName; return true; }
+        return false;
       }
       case 'deleteAttr': {
         const node = findNodeById(root, payload.memberId);
-        if (node && node.attributes) node.attributes = node.attributes.filter(a => a.name !== payload.attrName);
-        break;
+        if (node && node.attributes) { node.attributes = node.attributes.filter(a => a.name !== payload.attrName); return true; }
+        return false;
       }
-      case 'addFamily': { appData.families.push(payload.family); break; }
-      case 'deleteFamily': { appData.families = appData.families.filter(f => f.id !== payload.familyId); break; }
+      case 'addFamily': { appData.families.push(payload.family); return true; }
+      case 'deleteFamily': { appData.families = appData.families.filter(f => f.id !== payload.familyId); return true; }
       case 'renameFamily': {
         const f = appData.families.find(f => f.id === payload.familyId);
         if (f) {
           f.name = payload.newName;
           if (f.root) f.root.name = payload.newName;
+          return true;
         }
-        break;
+        return false;
       }
-      case 'setFamilyPreface': { const f = appData.families.find(f => f.id === payload.familyId); if (f) f.preface = payload.preface; break; }
+      case 'setFamilyPreface': { const f = appData.families.find(f => f.id === payload.familyId); if (f) { f.preface = payload.preface; return true; } return false; }
       case 'reorderChildren': {
         const parent = findNodeById(root, payload.parentId);
         if (parent && parent.children) {
           const reordered = []; for (const id of payload.newOrder) { const child = parent.children.find(c => c.id === id); if (child) reordered.push(child); }
           parent.children = reordered;
+          return true;
         }
-        break;
+        return false;
       }
     }
+    return false;
   }
 
   function saveDataToLocal() {
@@ -506,9 +509,22 @@
   }
 
   function addOperation(action, payload) {
+    const requiresRoot = ['addChild','deleteMember','setAttr','setName','deleteAttr','reorderChildren'];
+    if (requiresRoot.includes(action) && !getCurrentRoot()) {
+      alert('请先选择一个家族');
+      return;
+    }
+
     const op = { action, payload };
+    const applied = localApply(op);
+    if (!applied) {
+      if (requiresRoot.includes(action)) {
+        alert('操作失败，请刷新页面后重试');
+      }
+      return;
+    }
+
     pendingOperations.push(op);
-    localApply(op);
     renderTree();
     refreshDetailView();
     updateFamilySelector();
@@ -559,6 +575,8 @@
               loadRemoteData(cloudData, cloudData._version || 0);
               if (currentFamId && appData.families.some(f => f.id === currentFamId)) {
                 appData.currentFamilyId = currentFamId;
+              } else if (appData.families.length > 0) {
+                appData.currentFamilyId = appData.families[0].id;
               }
               showInfoBar('✅ 已更新为云端数据', 2000);
             } else {
@@ -1681,7 +1699,6 @@
   }
 
   async function init(){
-    // 先加载用户信息，确保角色在渲染前就绪
     await loadUserInfo();
     applyRolePermissions();
 
