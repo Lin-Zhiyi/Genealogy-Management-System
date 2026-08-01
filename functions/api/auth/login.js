@@ -1,6 +1,32 @@
 // functions/api/auth/login.js
+
+// 速率限制内存 Map
+const rateLimitMap = new Map();
+
 export async function onRequestPost(context) {
   const { request, env } = context;
+
+  // 速率限制检查
+  const clientIP = request.headers.get('CF-Connecting-IP') || 'unknown';
+  const now = Date.now();
+  const windowMs = 60 * 1000;
+  if (!rateLimitMap.has(clientIP)) {
+    rateLimitMap.set(clientIP, { count: 1, resetAt: now + windowMs });
+  } else {
+    const entry = rateLimitMap.get(clientIP);
+    if (now > entry.resetAt) {
+      entry.count = 1;
+      entry.resetAt = now + windowMs;
+    } else {
+      entry.count++;
+      if (entry.count > 5) {
+        return new Response(JSON.stringify({ error: '请求过于频繁，请稍后再试' }), {
+          status: 429,
+          headers: { 'Content-Type': 'application/json; charset=utf-8' }
+        });
+      }
+    }
+  }
 
   // 检查环境变量
   if (!env.JWT_SECRET || env.JWT_SECRET.length < 16) {
@@ -24,6 +50,26 @@ export async function onRequestPost(context) {
   const { username, password } = body;
   if (!username || !password) {
     return new Response(JSON.stringify({ error: '用户名和密码不能为空' }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json; charset=utf-8' }
+    });
+  }
+
+  // 输入验证
+  if (typeof username !== 'string' || typeof password !== 'string') {
+    return new Response(JSON.stringify({ error: '字段类型错误' }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json; charset=utf-8' }
+    });
+  }
+  if (username.length < 2 || username.length > 20) {
+    return new Response(JSON.stringify({ error: '用户名长度不正确' }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json; charset=utf-8' }
+    });
+  }
+  if (password.length < 6) {
+    return new Response(JSON.stringify({ error: '密码至少6位' }), {
       status: 400,
       headers: { 'Content-Type': 'application/json; charset=utf-8' }
     });
@@ -85,7 +131,7 @@ export async function onRequestPost(context) {
     });
   }
 
-  // 生成 JWT（支持任意 Unicode 字符）
+  // 生成 JWT
   let token;
   try {
     token = await generateToken({ username, role: user.role }, env.JWT_SECRET, '24h');
@@ -137,7 +183,6 @@ async function generateToken(payload, secret, expiresIn) {
   return `${headerB64}.${payloadB64}.${signatureB64}`;
 }
 
-// 将字节数组编码为 Base64URL 字符串
 function base64UrlEncode(buffer) {
   const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
   let binary = '';
@@ -147,7 +192,7 @@ function base64UrlEncode(buffer) {
   return btoa(binary).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
 }
 
-// ---------- JWT 验证（必须与此文件中的编码方式一致）----------
+// ---------- JWT 验证（与中间件一致）----------
 async function verifyToken(token, secret) {
   const encoder = new TextEncoder();
   const parts = token.split('.');
@@ -167,7 +212,6 @@ async function verifyToken(token, secret) {
   const valid = await crypto.subtle.verify('HMAC', key, signature, data);
   if (!valid) throw new Error('Signature invalid');
 
-  // 解码 payload（UTF-8 安全）
   const payloadBytes = base64UrlDecode(payloadB64);
   const payloadText = new TextDecoder().decode(payloadBytes);
   const payload = JSON.parse(payloadText);
@@ -176,10 +220,8 @@ async function verifyToken(token, secret) {
   return { payload };
 }
 
-// 将 Base64URL 字符串解码为 Uint8Array
 function base64UrlDecode(str) {
   let base64 = str.replace(/-/g, '+').replace(/_/g, '/');
-  // 补齐长度
   while (base64.length % 4) {
     base64 += '=';
   }
