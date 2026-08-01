@@ -477,7 +477,15 @@
       }
       case 'addFamily': { appData.families.push(payload.family); break; }
       case 'deleteFamily': { appData.families = appData.families.filter(f => f.id !== payload.familyId); break; }
-      case 'renameFamily': { const f = appData.families.find(f => f.id === payload.familyId); if (f) f.name = payload.newName; break; }
+      case 'renameFamily': {
+        const f = appData.families.find(f => f.id === payload.familyId);
+        if (f) {
+          f.name = payload.newName;
+          // 同步更新根节点的名称，以便左侧树和家族选择器显示最新名称
+          if (f.root) f.root.name = payload.newName;
+        }
+        break;
+      }
       case 'setFamilyPreface': { const f = appData.families.find(f => f.id === payload.familyId); if (f) f.preface = payload.preface; break; }
       case 'reorderChildren': {
         const parent = findNodeById(getCurrentRoot() || appData, payload.parentId);
@@ -753,7 +761,6 @@
       const tdData = tr.querySelector('.col-data');
       if (f.editable !== false) {
         tdData.addEventListener('dblclick', () => {
-          // 权限检查：无编辑权限则不能弹出编辑框
           if (!canEditNode(node)) return;
           if (f.isHtml) return;
           if (f.customIdx !== undefined) startEditingCustom(tr, f.customIdx, node);
