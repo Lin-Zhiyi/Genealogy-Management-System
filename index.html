@@ -505,14 +505,12 @@
   }
 
   function addOperation(action, payload) {
-    // 对于需要家族根节点的操作，必须确保当前有家族
     const requiresRoot = ['addChild','deleteMember','setAttr','setName','deleteAttr','reorderChildren'];
     if (requiresRoot.includes(action)) {
       if (!getCurrentRoot()) {
         alert('请先选择一个家族');
-        return;
+        return false;
       }
-      // 附加当前家族ID
       if (!payload.familyId) payload.familyId = appData.currentFamilyId;
     }
 
@@ -521,7 +519,7 @@
       if (requiresRoot.includes(action)) {
         alert('操作失败，请刷新页面后重试');
       }
-      return;
+      return false;
     }
 
     pendingOperations.push(op);
@@ -532,6 +530,8 @@
     saveDataToLocal();
     scheduleSync();
     localStorage.setItem('has_pending_changes', '1');
+    refreshEditButtons();
+    return true;
   }
 
   // ==================== 同步逻辑 ====================
@@ -566,7 +566,7 @@
           saveDataToLocal();
           success = true;
         } else if (res.status === 409) {
-          showInfoBar('⚠️ 数据冲突，正在更新为云端数据...', 0);
+          showInfoBar('⚠️ 数据冲突，本地未同步的修改已丢失，正在更新为云端数据...', 0);
           try {
             const cloudRes = await fetch(CLOUD_API_URL);
             if (cloudRes.ok) {
@@ -640,6 +640,7 @@
     const root = getCurrentRoot(); if (root) expandedNodeIds.add(root.id);
     saveDataToLocal();
     renderTree(); refreshDetailView(); updateFamilySelector();
+    refreshEditButtons();
   }
 
   async function initialSyncFromCloud() {
@@ -676,10 +677,8 @@
     });
   }
 
-  // 重构：切换家族前强制同步
   window.switchFamily = async function(familyId) {
     if (!familyId || familyId === appData.currentFamilyId) return;
-    // 强制同步当前待处理操作
     if (pendingOperations.length > 0) {
       await syncNow();
     }
@@ -688,6 +687,7 @@
     const root = getCurrentRoot(); if (root) expandedNodeIds.add(root.id);
     saveDataToLocal();
     renderTree(); refreshDetailView(); updateFamilySelector();
+    refreshEditButtons();
   };
 
   // ---------- 渲染 ----------
@@ -898,17 +898,17 @@
     if (node.isRoot) return;
     if (confirm(`确定删除「${node.name}」及其后代吗？`)) {
       const parent = findParentNode(root, nid);
-      if (parent) {
-        const idx = parent.children.findIndex(c => c.id === nid);
-        if (idx !== -1) {
-          const deletedNode = parent.children.splice(idx, 1)[0];
-          const snapshot = JSON.parse(JSON.stringify(deletedNode));
-          undoStack.push({ node: snapshot, parentId: parent.id });
-          if (undoStack.length > 20) undoStack.shift();
-          addOperation('deleteMember', { memberId: nid });
-          if (selectedNodeId === nid) selectedNodeId = parent.id;
-          showUndoBar(deletedNode.name, undoStack.length);
-        }
+      if (!parent) return;
+      const idx = parent.children.findIndex(c => c.id === nid);
+      if (idx === -1) return;
+      // 创建快照用于撤销（在删除前）
+      const snapshot = JSON.parse(JSON.stringify(parent.children[idx]));
+      // 通过 addOperation 执行删除
+      if (addOperation('deleteMember', { memberId: nid })) {
+        undoStack.push({ node: snapshot, parentId: parent.id });
+        if (undoStack.length > 20) undoStack.shift();
+        if (selectedNodeId === nid) selectedNodeId = parent.id;
+        showUndoBar(snapshot.name, undoStack.length);
       }
     }
   }
@@ -1039,6 +1039,7 @@
           appData.currentFamilyId = newFam.id;
           selectedNodeId = null; expandedNodeIds.clear(); expandedNodeIds.add(newRoot.id);
           renderTree(); refreshDetailView(); updateFamilySelector(); overlay.remove();
+          refreshEditButtons();
         }
       };
     }
@@ -1101,11 +1102,12 @@
         }
       }
       close();
+      refreshEditButtons();
     };
     overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
   }
 
-  // ---------- 右键菜单（修复空白条）----------
+  // ---------- 右键菜单 ----------
   function showContextMenu(x, y, node) {
     const menu = document.getElementById('contextMenu');
     menu.style.left = x + 'px';
@@ -1160,26 +1162,32 @@
   function exportData() { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(appData, null, 2)])); a.download = '族谱管理系统.json'; a.click(); }
   function importData() { document.getElementById('fileInput').click(); }
 
-  function handleFileImport(e) {
+  async function handleFileImport(e) {
     const f = e.target.files[0]; if (!f) return;
     const reader = new FileReader();
-    reader.onload = ev => {
+    reader.onload = async (ev) => {
       try {
         const data = JSON.parse(ev.target.result);
         if (data.families && Array.isArray(data.families)) {
           data._forceOverwrite = true;
-          fetch(CLOUD_API_URL, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) })
-            .then(res => {
-              if (!res.ok) return res.json().then(err => { throw new Error(err.error || '导入失败'); });
-              return res.json();
-            })
-            .then(result => {
-              if (result.version) { baseVersion = result.version; appData = data; appData._version = result.version; pendingOperations = []; }
-              selectedNodeId = null; expandedNodeIds.clear();
-              const root = getCurrentRoot(); if (root) expandedNodeIds.add(root.id);
-              saveDataToLocal(); renderTree(); refreshDetailView(); updateFamilySelector(); switchTab('properties');
-            })
-            .catch(err => alert('导入失败: ' + err.message));
+          try {
+            const res = await fetch(CLOUD_API_URL, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+            if (!res.ok) {
+              const err = await res.json();
+              throw new Error(err.error || '导入失败');
+            }
+            const result = await res.json();
+            baseVersion = result.version;
+            data._version = result.version;
+            appData = data;
+            pendingOperations = [];
+            selectedNodeId = null; expandedNodeIds.clear();
+            const root = getCurrentRoot(); if (root) expandedNodeIds.add(root.id);
+            saveDataToLocal(); renderTree(); refreshDetailView(); updateFamilySelector(); switchTab('properties');
+            refreshEditButtons();
+          } catch (err) {
+            alert('导入失败: ' + err.message);
+          }
         } else if (data.isRoot) {
           const fam = { id: generateId(), name: '导入的家族', root: data, preface: '' };
           addOperation('addFamily', { family: fam });
@@ -1192,16 +1200,36 @@
     reader.readAsText(f);
   }
 
-  function deleteAllData() {
+  async function deleteAllData() {
     if (appData.families.length === 0) { alert('没有数据可删除'); return; }
     if (!confirm('确定删除所有家族及全部成员数据吗？此操作不可恢复，但您可撤销。')) return;
     pendingDeleteAllData = JSON.parse(JSON.stringify(appData));
-    const families = [...appData.families];
-    for (const fam of families) { addOperation('deleteFamily', { familyId: fam.id }); }
+    const ops = appData.families.map(f => ({ action: 'deleteFamily', payload: { familyId: f.id } }));
+    for (const op of ops) {
+      localApply(op);
+    }
     appData.currentFamilyId = null;
     selectedNodeId = null; expandedNodeIds.clear();
     saveDataToLocal(); renderTree(); refreshDetailView(); updateFamilySelector();
+    refreshEditButtons();
     showUndoBarForAllData();
+    try {
+      const res = await fetch(CLOUD_API_URL, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ operations: ops })
+      });
+      if (res.ok) {
+        const result = await res.json();
+        baseVersion = result.version;
+        saveDataToLocal();
+      } else {
+        const err = await res.json();
+        showInfoBar('⚠️ 服务器同步失败: ' + (err.error || '未知错误'), 5000);
+      }
+    } catch (e) {
+      showInfoBar('⚠️ 网络错误，数据未同步', 5000);
+    }
   }
 
   function showUndoBarForAllData() {
@@ -1217,10 +1245,10 @@
       const root = getCurrentRoot(); if (root) expandedNodeIds.add(root.id);
       saveDataToLocal(); renderTree(); refreshDetailView(); updateFamilySelector();
       bar.remove(); showInfoBar('已撤销删除');
+      refreshEditButtons();
     };
   }
 
-  // 其他功能
   function updateViewModeButtons(m) { document.querySelectorAll('#viewModeBar button[data-mode]').forEach(b=>b.classList.remove('active')); const btn=document.querySelector(`#viewModeBar button[data-mode="${m}"]`); if(btn)btn.classList.add('active'); }
   function updateZoomButtons(){ document.getElementById('btnFitScreen').classList.toggle('active',autoFitEnabled); document.getElementById('btnOriginalSize').classList.toggle('active',!autoFitEnabled && currentScale===1); }
   function setViewMode(mode){ if(mode==='custom'){ showCustomRangeDialog((up,down)=>{customUp=up;customDown=down;relationViewMode='custom';updateViewModeButtons('custom');switchToRelation();}); return; } relationViewMode=mode; updateViewModeButtons(mode); switchToRelation(); }
@@ -1361,7 +1389,6 @@
     }).catch(err=>{ orgTree.style.transform=prevT; container.style.overflow=prevO; container.style.width=prevW; container.style.height=prevH; shadows.forEach(s=>s.n.style.boxShadow=s.bs); alert('导出失败:'+err); });
   }
 
-  // 搜索（排除“简介”）
   function openSearchDialog(){
     const overlay=document.createElement('div'); overlay.className='modal-overlay';
     overlay.innerHTML=`<div class="modal-dialog" style="width:450px;"><div class="modal-header">🔍 搜索</div><div class="modal-body"><div class="form-group"><label>关键字（空格分隔）</label><input type="text" id="searchInput" style="width:100%;padding:8px;"></div></div><div class="modal-footer"><button class="btn-cancel" id="searchCancel">取消</button><button class="btn-primary" id="searchOk">搜索</button></div></div>`;
@@ -1389,7 +1416,6 @@
     overlay.querySelectorAll('[data-id]').forEach(el=>el.addEventListener('click',()=>{ const id=el.dataset.id; overlay.remove(); const node=findNodeById(root,id); if(node){ let p=node; while(p){ const par=findParentNode(root,p.id); if(par) expandedNodeIds.add(par.id); p=par; } expandedNodeIds.add(node.id); selectNode(node.id); switchTab('properties'); } }));
   }
 
-  // 用户
   async function loadUserInfo(){
     try{
       const res = await fetch('/api/auth/me');
@@ -1453,7 +1479,6 @@
   }
   function showHelp(){ alert('帮助内容'); }
 
-  // ---------- 备份管理 ----------
   async function openBackupDialog() {
     try {
       const res = await fetch('/api/data?action=list_backups');
@@ -1498,7 +1523,6 @@
     }
   }
 
-  // ---------- 用户管理（增加删除功能）----------
   async function openAdminDialog() {
     try {
       const res = await fetch('/api/admin/users');
@@ -1593,7 +1617,6 @@
     document.getElementById('statusCount').textContent = `共 ${memberCount} 位成员，${genCount} 代`;
   }
 
-  // ==================== 分割线拖拽 ====================
   function setupSash() {
     if (document.body.classList.contains('mobile-layout')) return;
 
@@ -1635,7 +1658,6 @@
     });
   }
 
-  // ==================== 角色权限控制 ====================
   function applyRolePermissions() {
     const isAdmin = (currentUserRole === 'admin');
     const menuFile = document.getElementById('menuFile');
