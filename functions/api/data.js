@@ -7,18 +7,25 @@ export async function onRequest(context) {
     return new Response('Not found', { status: 404 });
   }
 
+  // 动态 CORS 白名单
+  const origin = request.headers.get('Origin') || '';
+  const allowedOrigins = ['https://yourdomain.com', 'http://localhost:8787']; // 按实际修改
   const headers = {
     'Content-Type': 'application/json; charset=utf-8',
-    'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET, PUT, PATCH, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type',
   };
+  if (allowedOrigins.includes(origin)) {
+    headers['Access-Control-Allow-Origin'] = origin;
+  } else {
+    headers['Access-Control-Allow-Origin'] = allowedOrigins[0];
+  }
 
   if (request.method === 'OPTIONS') {
     return new Response(null, { headers });
   }
 
-  // 获取用户名
+  // 获取当前用户名（问题1：多用户隔离）
   const username = await getUsernameFromCookie(request, env.JWT_SECRET);
   if (!username) {
     return new Response(JSON.stringify({ error: '未登录' }), { status: 401, headers });
