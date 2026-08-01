@@ -534,7 +534,7 @@
     return true;
   }
 
-  // ==================== 同步逻辑 ====================
+  // ==================== 同步逻辑（携带 baseVersion + 自动 rebase） ====================
   function scheduleSync() {
     if (syncTimer) clearTimeout(syncTimer);
     if (isUserEditing) {
@@ -547,6 +547,7 @@
   async function syncNow() {
     if (pendingOperations.length === 0) return;
     const ops = [...pendingOperations];
+    const currentBaseVersion = baseVersion; // 记录提交时的版本
     let success = false;
     let retries = 3;
     while (retries-- > 0 && !success) {
@@ -554,7 +555,7 @@
         const res = await fetch(CLOUD_API_URL, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ operations: ops })
+          body: JSON.stringify({ operations: ops, baseVersion: currentBaseVersion })
         });
         if (res.ok) {
           const result = await res.json();
@@ -566,31 +567,48 @@
           saveDataToLocal();
           success = true;
         } else if (res.status === 409) {
-          showInfoBar('⚠️ 数据冲突，本地未同步的修改已丢失，正在更新为云端数据...', 0);
-          try {
-            const cloudRes = await fetch(CLOUD_API_URL);
-            if (cloudRes.ok) {
-              const cloudData = await cloudRes.json();
-              const currentFamId = appData.currentFamilyId;
-              loadRemoteData(cloudData, cloudData._version || 0);
-              if (currentFamId && appData.families.some(f => f.id === currentFamId)) {
-                appData.currentFamilyId = currentFamId;
-              } else if (appData.families.length > 0) {
-                appData.currentFamilyId = appData.families[0].id;
+          const err = await res.json();
+          // 如果服务器返回了最新数据，则尝试 rebase（重新应用操作）
+          if (err.latestData) {
+            showInfoBar('⚠️ 检测到其他设备修改，正在尝试自动合并...', 0);
+            try {
+              // 应用云端数据
+              await loadRemoteData(err.latestData, err.latestVersion);
+              // 重新在本地应用未同步的操作
+              const replayOps = [...pendingOperations];
+              let replaySuccess = true;
+              for (const op of replayOps) {
+                if (!localApply(op)) {
+                  replaySuccess = false;
+                  console.warn('操作无法重新应用，已丢弃:', op);
+                  pendingOperations = pendingOperations.filter(o => o !== op);
+                }
               }
-              showInfoBar('✅ 已更新为云端数据', 2000);
-            } else {
-              showInfoBar('❌ 无法获取云端数据', 3000);
+              if (replaySuccess) {
+                showInfoBar('✅ 自动合并成功，正在提交...', 1500);
+                // 递归提交合并后的操作
+                setTimeout(() => syncNow(), 500);
+              } else {
+                showInfoBar('⚠️ 部分操作因冲突被丢弃，请检查数据', 4000);
+              }
+              pendingOperations = pendingOperations.filter(op => !ops.includes(op));
+              localStorage.removeItem('has_pending_changes');
+              saveDataToLocal();
+              return;
+            } catch (rebaseError) {
+              showInfoBar('❌ 自动合并失败，本地修改可能丢失', 3000);
+              pendingOperations = pendingOperations.filter(op => !ops.includes(op));
+              localStorage.removeItem('has_pending_changes');
             }
-          } catch {
-            showInfoBar('❌ 网络错误', 3000);
+          } else {
+            showInfoBar('⚠️ 同步冲突，本地修改已丢失', 3000);
+            pendingOperations = pendingOperations.filter(op => !ops.includes(op));
+            localStorage.removeItem('has_pending_changes');
           }
-          pendingOperations = pendingOperations.filter(op => !ops.includes(op));
-          localStorage.removeItem('has_pending_changes');
           success = true;
         } else {
-          const err = await res.json();
-          throw new Error(err.error || '同步失败');
+          const errText = await res.json();
+          throw new Error(errText.error || '同步失败');
         }
       } catch (e) {
         if (retries <= 0) {
@@ -901,9 +919,7 @@
       if (!parent) return;
       const idx = parent.children.findIndex(c => c.id === nid);
       if (idx === -1) return;
-      // 创建快照用于撤销（在删除前）
       const snapshot = JSON.parse(JSON.stringify(parent.children[idx]));
-      // 通过 addOperation 执行删除
       if (addOperation('deleteMember', { memberId: nid })) {
         undoStack.push({ node: snapshot, parentId: parent.id });
         if (undoStack.length > 20) undoStack.shift();
@@ -1217,7 +1233,7 @@
       const res = await fetch(CLOUD_API_URL, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ operations: ops })
+        body: JSON.stringify({ operations: ops, baseVersion: baseVersion })
       });
       if (res.ok) {
         const result = await res.json();
@@ -1472,10 +1488,11 @@
     fetch('/api/auth/logout',{method:'POST'}).then(()=>window.location.href='/login.html').catch(()=>window.location.href='/login.html');
   }
 
-  function uploadOnClose(){
-    const payload = JSON.parse(JSON.stringify(appData));
-    payload._forceOverwrite = true;
-    fetch(CLOUD_API_URL, { method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload), keepalive:true }).catch(()=>{});
+  // 安全关闭：仅尝试增量同步，不使用强制 PUT
+  function uploadOnClose() {
+    if (pendingOperations.length === 0) return;
+    const body = JSON.stringify({ operations: pendingOperations, baseVersion: baseVersion });
+    fetch(CLOUD_API_URL, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body, keepalive: true }).catch(() => {});
   }
   function showHelp(){ alert('帮助内容'); }
 
