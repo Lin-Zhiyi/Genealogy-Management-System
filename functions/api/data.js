@@ -42,7 +42,7 @@ export async function onRequest(context) {
     return new Response(JSON.stringify({ error: 'KV 未绑定' }), { status: 500, headers });
   }
 
-  // 全局共享键名（所有用户共用一份族谱）
+  // 全局共享键名
   const kvKey = 'family-data';
   const backupListKey = 'family-data-backup-list';
   const backupLastTimeKey = 'family-data-backup-lasttime';
@@ -83,7 +83,7 @@ export async function onRequest(context) {
     }
   }
 
-  // ---------- 节点查找（支持 families 结构）----------
+  // ---------- 节点查找 ----------
   function findNodeInFamilies(data, id) {
     if (!data || !data.families) return null;
     for (const fam of data.families) {
@@ -125,42 +125,7 @@ export async function onRequest(context) {
     return null;
   }
 
-  // 检查节点是否是某个节点的直系后代
-  function isDescendantOf(root, ancestorId, nodeId) {
-    const node = findNodeInFamilies(root, nodeId);
-    if (!node) return false;
-    let current = node;
-    while (current) {
-      const parent = findParentInFamilies(root, current.id);
-      if (parent && parent.id === ancestorId) return true;
-      if (!parent || parent.isRoot) break;
-      current = parent;
-    }
-    return false;
-  }
-
-  // 获取用户有权编辑的节点ID集合（用于编辑用户）
-  function getEditableNodeIds(data, username) {
-    const editable = new Set();
-    if (!data || !data.families) return editable;
-    // 找到姓名等于用户名的成员（可能有多个？取第一个家族中的第一个匹配）
-    for (const fam of data.families) {
-      const found = findMemberByName(fam.root, username);
-      if (found) {
-        editable.add(found.id); // 本人
-        // 直系后代
-        addDescendants(found, editable);
-        // 父亲
-        const parent = findParentInTree(fam.root, found.id);
-        if (parent && !parent.isRoot) {
-          editable.add(parent.id);
-        }
-        break; // 只处理第一个匹配
-      }
-    }
-    return editable;
-  }
-
+  // 查找姓名等于指定值的成员（排除根节点）
   function findMemberByName(node, name) {
     if (!node.isRoot && node.name === name) return node;
     if (node.children) {
@@ -172,6 +137,7 @@ export async function onRequest(context) {
     return null;
   }
 
+  // 收集所有后代节点ID
   function addDescendants(node, set) {
     if (node.children) {
       for (const child of node.children) {
@@ -181,55 +147,72 @@ export async function onRequest(context) {
     }
   }
 
-  // 权限校验函数
+  // 获取编辑用户有权编辑的节点ID集合
+  function getEditableNodeIds(data, username) {
+    const editable = new Set();
+    if (!data || !data.families) return editable;
+    for (const fam of data.families) {
+      const member = findMemberByName(fam.root, username);
+      if (member) {
+        editable.add(member.id); // 本人
+        addDescendants(member, editable); // 所有后代
+        // 父亲
+        const parent = findParentInTree(fam.root, member.id);
+        if (parent && !parent.isRoot) {
+          editable.add(parent.id);
+        }
+        break; // 只处理第一个匹配
+      }
+    }
+    return editable;
+  }
+
+  // 权限校验
   function checkPermission(data, username, role, action, payload) {
-    if (role === 'admin') return true; // 管理员无所不能
+    if (role === 'admin') return true;
+    if (role === 'viewer') return false; // 浏览用户无任何编辑权限
 
-    // 浏览用户无任何编辑权限
-    if (role === 'viewer') return false;
-
-    // 编辑用户权限判断
+    // 编辑用户
     if (role === 'editor') {
       switch (action) {
         case 'addFamily':
         case 'deleteFamily':
         case 'renameFamily':
         case 'setFamilyPreface':
-          return false; // 禁止家族管理
+          return false;
 
         case 'addChild': {
-          // 允许添加子成员到本人、直系后代、父亲
           const editableIds = getEditableNodeIds(data, username);
           return editableIds.has(payload.parentId);
         }
         case 'deleteMember': {
-          // 允许删除本人、直系后代
+          // 只能删除本人或后代，不能删除父亲
           const editableIds = getEditableNodeIds(data, username);
+          if (!editableIds.has(payload.memberId)) return false;
+          // 检查要删除的节点是不是“父亲”（即其姓名等于用户名且父亲节点）
           const member = findNodeInFamilies(data, payload.memberId);
           if (!member) return false;
-          // 不能删除父亲
           const parent = findParentInFamilies(data, payload.memberId);
-          if (parent && !parent.isRoot && parent.name === username) return false; // 不能删除名为用户名的节点（本人）？其实本人是可以删除的，但只能删除后代？
-          // 仅允许删除本人或直系后代（即 editableIds 中包含该成员且不是父亲）
-          if (!editableIds.has(payload.memberId)) return false;
-          // 但父亲节点在 editableIds 中（为了允许编辑父亲信息），所以需要额外判断：不能删除父亲
-          const node = findNodeInFamilies(data, payload.memberId);
-          const father = findParentInFamilies(data, payload.memberId);
-          if (father && !father.isRoot && father.name === username) return false; // 父亲是用户本人？不对，父亲姓名等于用户名的情况是用户本人是父亲？逻辑混乱，简化：不允许删除父亲节点（父亲节点id在editableIds中但实际不应该被删除）
-          // 简便办法：不允许删除任何editableIds中的节点，但需排除父亲？父亲id在editableIds中用于添加子成员和编辑属性，但不应被删除。所以需要更精确的判断：可删除的节点是本人和所有后代，不包括父亲。
-          // 我们重新定义：获取用户可管理成员集合（可编辑属性/添加子成员）：本人、直系后代、父亲。可删除集合：本人、直系后代。在 checkPermission 时区分。
-          // 为简化，此处返回 true 的前提是节点在 editableIds 中，且不是父亲。代码略，将在权限判断时分开。
-          return true; // 暂时放宽，后续完善
+          if (parent && !parent.isRoot && parent.name === username) {
+            // 父亲不能删除
+            // 但注意：用户本人的父亲也可能被误判，需要判断 member 是否是用户本人？
+            // 简单判断：如果被删除节点的父节点姓名等于 username，且被删除节点不是用户本人，则不允许删除
+            // 然而本人也可能有父亲（即用户的父亲），用户不能删除自己的父亲，但可以删除自己？
+            // 我们允许删除本人和后代，禁止删除父亲。判断条件：若 payload.memberId 对应的节点的父节点姓名等于 username，且该节点不是用户本人，则拒绝。
+            const selfNode = findMemberByName(data, username);
+            if (selfNode && payload.memberId !== selfNode.id) {
+              return false;
+            }
+          }
+          return true;
         }
         case 'setAttr':
         case 'setName':
         case 'deleteAttr': {
-          // 允许编辑本人、直系后代、父亲的属性
           const editableIds = getEditableNodeIds(data, username);
           return editableIds.has(payload.memberId);
         }
         case 'reorderChildren': {
-          // 允许对本人、直系后代、父亲的子女排序
           const editableIds = getEditableNodeIds(data, username);
           return editableIds.has(payload.parentId);
         }
@@ -240,10 +223,9 @@ export async function onRequest(context) {
     return false;
   }
 
-  // ---------- 操作执行（加入权限校验）----------
+  // 操作执行（带权限）
   function applyOperation(root, op, username, role) {
     const { action, payload } = op;
-    // 权限检查
     if (!checkPermission(root, username, role, action, payload)) {
       throw new Error('权限不足');
     }
@@ -337,7 +319,6 @@ export async function onRequest(context) {
     const action = url.searchParams.get('action');
 
     if (action === 'list_backups') {
-      // 仅管理员可查看备份列表
       if (role !== 'admin') {
         return new Response(JSON.stringify({ error: '权限不足' }), { status: 403, headers });
       }
