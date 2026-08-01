@@ -115,7 +115,7 @@ export async function onRequest(context) {
     return null;
   }
 
-  // 在全量数据中查找成员（用于权限校验和获取可编辑节点集合等）
+  // 在全量数据中查找成员
   function findMemberByName(data, name) {
     if (!data || !data.families) return null;
     for (const fam of data.families) {
@@ -145,7 +145,7 @@ export async function onRequest(context) {
     }
   }
 
-  // 获取编辑用户有权编辑的节点ID集合（遍历所有家族，但返回所有家族内的可编辑节点）
+  // 获取编辑用户有权编辑的节点ID集合
   function getEditableNodeIds(data, username) {
     const editable = new Set();
     if (!data || !data.families) return editable;
@@ -158,31 +158,25 @@ export async function onRequest(context) {
         if (parent && !parent.isRoot) {
           editable.add(parent.id);
         }
-        // 注意：一个用户可能存在于多个家族，我们只取第一个匹配的
-        // 实际使用中，编辑用户的权限应限定在当前操作的家族内，
-        // 这里返回全局可编辑节点仅用于初步判断，后面在具体操作时会限制在家族内。
         break;
       }
     }
     return editable;
   }
 
-  // 权限校验（根据操作类型和 payload 判断）
+  // 权限校验
   function checkPermission(data, username, role, action, payload) {
     if (role === 'admin') return true;
     if (role === 'viewer') return false;
 
     if (role === 'editor') {
-      // 管理员才能做家族级别的操作
       if (['addFamily', 'deleteFamily', 'renameFamily', 'setFamilyPreface'].includes(action)) {
         return false;
       }
 
-      // 对于需要 familyId 的操作，获取该家族内用户的可编辑节点
       if (payload.familyId) {
         const family = data.families.find(f => f.id === payload.familyId);
         if (!family) return false;
-        // 找到用户在该家族内的本人节点
         const self = findMemberInTree(family.root, username);
         if (!self) return false;
         const editableIds = new Set();
@@ -199,7 +193,6 @@ export async function onRequest(context) {
             return editableIds.has(payload.parentId);
           case 'deleteMember': {
             if (!editableIds.has(payload.memberId)) return false;
-            // 禁止删除自己的父亲
             const father = findParentInTree(family.root, self.id);
             if (father && payload.memberId === father.id) return false;
             return true;
@@ -212,17 +205,15 @@ export async function onRequest(context) {
             return false;
         }
       }
-      // 没有 familyId 的 editor 操作一律拒绝（例如家族级别）
       return false;
     }
     return false;
   }
 
-  // ---------- 应用单个操作（在数据对象上，已剥离版本号）----------
+  // 应用操作
   function applyOperation(rootData, op, username, role) {
     const { action, payload } = op;
 
-    // 权限校验
     if (!checkPermission(rootData, username, role, action, payload)) {
       throw new Error('权限不足');
     }
@@ -407,26 +398,40 @@ export async function onRequest(context) {
     }
   }
 
-  // ========== PATCH：增量操作（事务性执行） ==========
+  // ========== PATCH：增量操作（事务性 + 乐观锁） ==========
   if (request.method === 'PATCH') {
     try {
-      const { operations } = await request.json();
+      const body = await request.json();
+      const { operations, baseVersion } = body;
       if (!Array.isArray(operations)) throw new Error('operations 必须为数组');
+      if (typeof baseVersion !== 'number') {
+        throw new Error('缺少 baseVersion 参数');
+      }
 
       let current = await getCurrentData();
       if (!current) {
         current = { families: [], _version: 0 };
       }
 
-      // 1. 深拷贝当前数据，在副本上依次应用所有操作
+      const serverVersion = current._version || 0;
+      // 乐观锁检查：客户端必须基于最新的服务端版本提交操作
+      if (baseVersion !== serverVersion) {
+        return new Response(JSON.stringify({
+          error: '版本冲突，请刷新重试',
+          latestVersion: serverVersion,
+          latestData: current
+        }), { status: 409, headers });
+      }
+
+      // 在副本上执行操作（事务性）
       const tempData = JSON.parse(JSON.stringify(current));
 
       for (const op of operations) {
         applyOperation(tempData, op, username, role);
       }
 
-      // 2. 全部成功，则更新版本并保存
-      tempData._version = (current._version || 0) + 1;
+      // 更新版本并保存
+      tempData._version = serverVersion + 1;
       await saveData(tempData);
       context.waitUntil(tryBackup(tempData, context));
 
