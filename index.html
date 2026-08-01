@@ -448,31 +448,34 @@
   }
 
   // ---------- 操作日志 ----------
+  // 修复跨家族 bug：必须基于当前家族根节点操作，不使用 appData 作为后备
   function localApply(op) {
+    const root = getCurrentRoot();
+    if (!root) return; // 无家族时忽略操作
     const { action, payload } = op;
     switch (action) {
       case 'addChild': {
-        const parent = findNodeById(getCurrentRoot() || appData, payload.parentId);
+        const parent = findNodeById(root, payload.parentId);
         if (parent) { if (!parent.children) parent.children = []; parent.children.push(payload.node); }
         break;
       }
       case 'deleteMember': {
-        const root = getCurrentRoot(); const parent = root ? findParentNode(root, payload.memberId) : null;
+        const parent = findParentNode(root, payload.memberId);
         if (parent) { const idx = parent.children.findIndex(c => c.id === payload.memberId); if (idx !== -1) parent.children.splice(idx, 1); }
         break;
       }
       case 'setAttr': {
-        const node = findNodeById(getCurrentRoot() || appData, payload.memberId);
+        const node = findNodeById(root, payload.memberId);
         if (node) { if (!node.attributes) node.attributes = []; const a = node.attributes.find(a => a.name === payload.attrName); if (a) a.value = payload.value; else node.attributes.push({ name: payload.attrName, value: payload.value }); }
         break;
       }
       case 'setName': {
-        const node = findNodeById(getCurrentRoot() || appData, payload.memberId);
+        const node = findNodeById(root, payload.memberId);
         if (node) node.name = payload.newName;
         break;
       }
       case 'deleteAttr': {
-        const node = findNodeById(getCurrentRoot() || appData, payload.memberId);
+        const node = findNodeById(root, payload.memberId);
         if (node && node.attributes) node.attributes = node.attributes.filter(a => a.name !== payload.attrName);
         break;
       }
@@ -482,13 +485,13 @@
         const f = appData.families.find(f => f.id === payload.familyId);
         if (f) {
           f.name = payload.newName;
-          if (f.root) f.root.name = payload.newName; // 同步根节点名称
+          if (f.root) f.root.name = payload.newName;
         }
         break;
       }
       case 'setFamilyPreface': { const f = appData.families.find(f => f.id === payload.familyId); if (f) f.preface = payload.preface; break; }
       case 'reorderChildren': {
-        const parent = findNodeById(getCurrentRoot() || appData, payload.parentId);
+        const parent = findNodeById(root, payload.parentId);
         if (parent && parent.children) {
           const reordered = []; for (const id of payload.newOrder) { const child = parent.children.find(c => c.id === id); if (child) reordered.push(child); }
           parent.children = reordered;
@@ -553,7 +556,13 @@
             const cloudRes = await fetch(CLOUD_API_URL);
             if (cloudRes.ok) {
               const cloudData = await cloudRes.json();
+              // 记录当前家族ID，避免被覆盖后丢失
+              const currentFamId = appData.currentFamilyId;
               loadRemoteData(cloudData, cloudData._version || 0);
+              // 如果云端仍有该家族，保持选中；否则回到第一个家族
+              if (currentFamId && appData.families.some(f => f.id === currentFamId)) {
+                appData.currentFamilyId = currentFamId;
+              }
               showInfoBar('✅ 已更新为云端数据', 2000);
             } else {
               showInfoBar('❌ 无法获取云端数据', 3000);
@@ -836,11 +845,11 @@
   }
 
   // ---------- 编辑操作（权限校验）----------
- function ensureEditPermission(node) {
-    if (!node) { alert('请先选择一个成员'); return false; }
+  function ensureEditPermission(node) {
+    if (!node || node.isRoot) { alert('请先选择一个成员'); return false; }
     if (!canEditNode(node)) { alert('您没有编辑该成员的权限'); return false; }
     return true;
-}
+  }
 
   function addAttribute() {
     if (!selectedNodeId || !getCurrentRoot()) { alert('请先选择一个成员'); return; }
@@ -1565,19 +1574,14 @@
   // ==================== 角色权限控制 ====================
   function applyRolePermissions() {
     const isAdmin = (currentUserRole === 'admin');
-    // 文件菜单
     const menuFile = document.getElementById('menuFile');
     if (menuFile) menuFile.style.display = isAdmin ? '' : 'none';
-    // 备份管理
     const menuBackup = document.getElementById('menuBackup');
     if (menuBackup) menuBackup.style.display = isAdmin ? '' : 'none';
-    // 用户管理
     const menuAdmin = document.getElementById('menuAdmin');
     if (menuAdmin) menuAdmin.style.display = isAdmin ? '' : 'none';
-    // 导出图片
     const btnExportChart = document.getElementById('btnExportChart');
     if (btnExportChart) btnExportChart.style.display = isAdmin ? '' : 'none';
-    // 序言按钮始终显示，通过 openPrefaceDialog 内部判断权限
     refreshEditButtons();
   }
 
@@ -1590,18 +1594,14 @@
 
   function canEditNode(node) {
     if (!node) return false;
-    // 管理员可以对根节点执行添加子成员等操作
     if (currentUserRole === 'admin' && node.isRoot) return true;
     if (node.isRoot) return false;
     if (currentUserRole === 'admin') return true;
     if (currentUserRole === 'viewer') return false;
     if (currentUserRole === 'editor') {
       const username = document.getElementById('usernameDisplay').textContent.split(' ')[0];
-      // 本人
       if (node.name === username) return true;
-      // 父亲：该节点的子节点中有名字等于 username 的
       if (isFatherOfCurrentUser(node)) return true;
-      // 直系后代：该节点的某个祖先的名字是 username
       const root = getCurrentRoot();
       let cur = node;
       while (cur) {
@@ -1619,7 +1619,6 @@
     if (!node || node.isRoot) return false;
     if (currentUserRole === 'admin') return true;
     if (currentUserRole === 'viewer') return false;
-    // 编辑用户：不能在父亲节点上添加兄弟
     if (isFatherOfCurrentUser(node)) return false;
     return canEditNode(node);
   }
