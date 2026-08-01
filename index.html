@@ -482,7 +482,7 @@
         const f = appData.families.find(f => f.id === payload.familyId);
         if (f) {
           f.name = payload.newName;
-          if (f.root) f.root.name = payload.newName;
+          if (f.root) f.root.name = payload.newName; // 同步根节点名称
         }
         break;
       }
@@ -1081,10 +1081,8 @@
     const menu = document.getElementById('contextMenu');
     menu.style.left = x + 'px';
     menu.style.top = y + 'px';
-    // 根据节点和角色调整可见菜单项
     const items = menu.querySelectorAll('.cm-item');
     const isAdmin = (currentUserRole === 'admin');
-    const isEditor = (currentUserRole === 'editor');
     const isViewer = (currentUserRole === 'viewer');
 
     items.forEach(item => {
@@ -1097,7 +1095,7 @@
         item.style.display = '';
         return;
       }
-      // 编辑用户：根据操作类型和节点判断
+      // 编辑用户
       if (action.includes('addChildMember') || action.includes('addAttribute') || action.includes('deleteSelectedMember')) {
         item.style.display = canEditNode(node) ? '' : 'none';
       } else if (action.includes('addSiblingMember')) {
@@ -1591,7 +1589,10 @@
   }
 
   function canEditNode(node) {
-    if (!node || node.isRoot) return false;
+    if (!node) return false;
+    // 管理员可以对根节点执行添加子成员等操作
+    if (currentUserRole === 'admin' && node.isRoot) return true;
+    if (node.isRoot) return false;
     if (currentUserRole === 'admin') return true;
     if (currentUserRole === 'viewer') return false;
     if (currentUserRole === 'editor') {
