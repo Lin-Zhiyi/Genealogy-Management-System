@@ -836,11 +836,11 @@
   }
 
   // ---------- 编辑操作（权限校验）----------
-  function ensureEditPermission(node) {
-    if (!node || node.isRoot) { alert('请先选择一个成员'); return false; }
+ function ensureEditPermission(node) {
+    if (!node) { alert('请先选择一个成员'); return false; }
     if (!canEditNode(node)) { alert('您没有编辑该成员的权限'); return false; }
     return true;
-  }
+}
 
   function addAttribute() {
     if (!selectedNodeId || !getCurrentRoot()) { alert('请先选择一个成员'); return; }
