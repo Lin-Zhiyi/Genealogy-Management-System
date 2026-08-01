@@ -1,9 +1,11 @@
 // functions/api/auth/register.js
+
 const rateLimitMap = new Map();
 
 export async function onRequestPost(context) {
   const { request, env } = context;
 
+  // 速率限制
   const clientIP = request.headers.get('CF-Connecting-IP') || 'unknown';
   const now = Date.now();
   const windowMs = 60 * 1000;
@@ -29,60 +31,115 @@ export async function onRequestPost(context) {
   try {
     body = await request.json();
   } catch {
-    return new Response(JSON.stringify({ error: '请求格式错误' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    return new Response(JSON.stringify({ error: '请求格式错误' }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' }
+    });
   }
 
   const { username, password, adminPassword } = body;
 
   if (!username || !password || !adminPassword) {
-    return new Response(JSON.stringify({ error: '所有字段都是必填的' }), { status: 400 });
+    return new Response(JSON.stringify({ error: '所有字段都是必填的' }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' }
+    });
   }
 
+  // 输入验证
   if (typeof username !== 'string' || typeof password !== 'string' || typeof adminPassword !== 'string') {
-    return new Response(JSON.stringify({ error: '字段类型错误' }), { status: 400 });
+    return new Response(JSON.stringify({ error: '字段类型错误' }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' }
+    });
   }
   if (username.length < 2 || username.length > 20) {
-    return new Response(JSON.stringify({ error: '用户名需在2-20个字符之间' }), { status: 400 });
+    return new Response(JSON.stringify({ error: '用户名需在2-20个字符之间' }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' }
+    });
   }
   if (!/^[a-zA-Z0-9_\u4e00-\u9fff]+$/.test(username)) {
-    return new Response(JSON.stringify({ error: '用户名只能包含中英文、数字和下划线' }), { status: 400 });
+    return new Response(JSON.stringify({ error: '用户名只能包含中英文、数字和下划线' }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' }
+    });
   }
   if (password.length < 6) {
-    return new Response(JSON.stringify({ error: '密码至少6个字符' }), { status: 400 });
+    return new Response(JSON.stringify({ error: '密码至少6个字符' }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' }
+    });
   }
 
   // 禁止注册 admin 用户名
   if (username === 'admin') {
-    return new Response(JSON.stringify({ error: '不能注册管理员账号' }), { status: 403 });
+    return new Response(JSON.stringify({ error: '不能注册管理员账号' }), {
+      status: 403,
+      headers: { 'Content-Type': 'application/json' }
+    });
   }
 
   // 验证管理员密码
-  const adminData = await env.USER_KV.get('user:admin');
+  let adminData;
+  try {
+    adminData = await env.USER_KV.get('user:admin');
+  } catch (e) {
+    return new Response(JSON.stringify({ error: '服务器存储错误' }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+
   if (!adminData) {
-    return new Response(JSON.stringify({ error: '管理员账户未配置，无法注册' }), { status: 500 });
+    return new Response(JSON.stringify({ error: '管理员账户未配置，无法注册' }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' }
+    });
   }
 
   let adminUser;
   try {
     adminUser = JSON.parse(adminData);
   } catch {
-    return new Response(JSON.stringify({ error: '管理员数据损坏' }), { status: 500 });
+    return new Response(JSON.stringify({ error: '管理员数据损坏' }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' }
+    });
   }
 
   const adminHashParts = adminUser.password.split(':');
   if (adminHashParts.length !== 2) {
-    return new Response(JSON.stringify({ error: '管理员密码格式错误' }), { status: 500 });
+    return new Response(JSON.stringify({ error: '管理员密码格式错误' }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' }
+    });
   }
   const [adminSalt, adminStoredHash] = adminHashParts;
   const adminHash = await sha512(adminSalt + adminPassword);
   if (adminHash !== adminStoredHash) {
-    return new Response(JSON.stringify({ error: '管理员密码错误' }), { status: 403 });
+    return new Response(JSON.stringify({ error: '管理员密码错误' }), {
+      status: 403,
+      headers: { 'Content-Type': 'application/json' }
+    });
   }
 
   // 检查用户名是否已存在
-  const existing = await env.USER_KV.get(`user:${username}`);
+  let existing;
+  try {
+    existing = await env.USER_KV.get(`user:${username}`);
+  } catch (e) {
+    return new Response(JSON.stringify({ error: '服务器存储错误' }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+
   if (existing) {
-    return new Response(JSON.stringify({ error: '用户名已存在' }), { status: 409 });
+    return new Response(JSON.stringify({ error: '用户名已存在' }), {
+      status: 409,
+      headers: { 'Content-Type': 'application/json' }
+    });
   }
 
   // 决定角色：编辑用户（editor）还是浏览用户（viewer）
@@ -101,7 +158,7 @@ export async function onRequestPost(context) {
       }
     }
   } catch (e) {
-    // 如果读取族谱数据失败，默认设为 viewer
+    // 读取族谱数据失败，默认设为 viewer
   }
 
   // 生成盐和哈希
@@ -113,7 +170,14 @@ export async function onRequestPost(context) {
     role
   };
 
-  await env.USER_KV.put(`user:${username}`, JSON.stringify(user));
+  try {
+    await env.USER_KV.put(`user:${username}`, JSON.stringify(user));
+  } catch (e) {
+    return new Response(JSON.stringify({ error: '保存用户失败' }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
 
   return new Response(JSON.stringify({ success: true, message: '注册成功，请登录', role }), {
     status: 201,
@@ -121,7 +185,7 @@ export async function onRequestPost(context) {
   });
 }
 
-// 工具函数：检查族谱中是否存在某个姓名
+// ---------- 工具函数 ----------
 function memberNameExists(node, name) {
   if (!node.isRoot && node.name === name) return true;
   if (node.children) {
