@@ -7,9 +7,9 @@ export async function onRequest(context) {
     return new Response('Not found', { status: 404 });
   }
 
-  // 动态 CORS 白名单
+  // 动态 CORS 白名单（请改为你自己的域名）
   const origin = request.headers.get('Origin') || '';
-  const allowedOrigins = ['https://yourdomain.com', 'http://localhost:8787']; // 按实际修改
+  const allowedOrigins = ['https://yourdomain.com', 'http://localhost:8787'];
   const headers = {
     'Content-Type': 'application/json; charset=utf-8',
     'Access-Control-Allow-Methods': 'GET, PUT, PATCH, OPTIONS',
@@ -25,17 +25,21 @@ export async function onRequest(context) {
     return new Response(null, { headers });
   }
 
-  // 获取当前用户名（问题1：多用户隔离）
+  // 获取当前用户名（多用户隔离）
   const username = await getUsernameFromCookie(request, env.JWT_SECRET);
   if (!username) {
     return new Response(JSON.stringify({ error: '未登录' }), { status: 401, headers });
   }
 
-  const kvKey = `family-data-${username}`;
-  const kv = env.genealogy_management_system;
+  const kv = env.genealogy_management_system;   // 你的 KV 绑定名称
   if (!kv) {
     return new Response(JSON.stringify({ error: 'KV 未绑定' }), { status: 500, headers });
   }
+
+  const kvKey = `family-data-${username}`;
+  const backupListKey = `family-data-backup-list-${username}`;
+  const backupLastTimeKey = `family-data-backup-lasttime-${username}`;
+  const BACKUP_INTERVAL_MS = 5 * 60 * 1000;   // 5分钟
 
   async function getCurrentData() {
     const raw = await kv.get(kvKey);
@@ -46,7 +50,36 @@ export async function onRequest(context) {
     await kv.put(kvKey, JSON.stringify(data));
   }
 
-  // ---------- 节点查找（支持 families 结构）----------
+  // ---------- 异步备份（不阻塞请求）----------
+  async function tryBackup(data, ctx) {
+    const now = Date.now();
+    const lastBackupStr = await kv.get(backupLastTimeKey);
+    const lastBackupTime = lastBackupStr ? parseInt(lastBackupStr) : 0;
+    if (now - lastBackupTime >= BACKUP_INTERVAL_MS) {
+      const timestamp = now;
+      const backupKey = `family-data-backup-${username}-${timestamp}`;
+      await kv.put(backupKey, JSON.stringify(data));
+
+      // 更新备份列表
+      let list = [];
+      const listRaw = await kv.get(backupListKey);
+      if (listRaw) {
+        list = JSON.parse(listRaw);
+      }
+      list.push({ key: backupKey, timestamp });
+      // 只保留最近 10 个备份
+      if (list.length > 10) {
+        const removed = list.splice(0, list.length - 10);
+        for (const item of removed) {
+          ctx.waitUntil(kv.delete(item.key));
+        }
+      }
+      await kv.put(backupListKey, JSON.stringify(list));
+      await kv.put(backupLastTimeKey, String(timestamp));
+    }
+  }
+
+  // ---------- 节点查找（与之前完全一致）----------
   function findNodeInFamilies(data, id) {
     if (!data || !data.families) return null;
     for (const fam of data.families) {
@@ -88,7 +121,6 @@ export async function onRequest(context) {
     return null;
   }
 
-  // ---------- 操作执行 ----------
   function applyOperation(root, op) {
     const { action, payload } = op;
     switch (action) {
@@ -178,6 +210,16 @@ export async function onRequest(context) {
 
   // ========== GET ==========
   if (request.method === 'GET') {
+    const action = url.searchParams.get('action');
+
+    // 备份列表
+    if (action === 'list_backups') {
+      const listRaw = await kv.get(backupListKey);
+      const list = listRaw ? JSON.parse(listRaw) : [];
+      return new Response(JSON.stringify({ backups: list }), { headers });
+    }
+
+    // 普通数据获取
     const current = await getCurrentData();
     if (current) {
       return new Response(JSON.stringify(current), { headers });
@@ -186,7 +228,49 @@ export async function onRequest(context) {
     }
   }
 
-  // ========== PUT（全量覆盖） ==========
+  // ========== POST：回滚备份 ==========
+  if (request.method === 'POST' && url.searchParams.get('action') === 'restore') {
+    try {
+      const body = await request.json();
+      const backupKey = body.backupKey;
+      if (!backupKey) {
+        return new Response(JSON.stringify({ error: '缺少备份键' }), { status: 400, headers });
+      }
+
+      // 验证备份键在列表中
+      const listRaw = await kv.get(backupListKey);
+      const list = listRaw ? JSON.parse(listRaw) : [];
+      if (!list.some(b => b.key === backupKey)) {
+        return new Response(JSON.stringify({ error: '备份不存在' }), { status: 404, headers });
+      }
+
+      const backupData = await kv.get(backupKey);
+      if (!backupData) {
+        return new Response(JSON.stringify({ error: '备份数据丢失' }), { status: 404, headers });
+      }
+
+      // 恢复前自动备份当前数据
+      const current = await getCurrentData();
+      if (current) {
+        const autoBackupKey = `family-data-backup-${username}-${Date.now()}`;
+        await kv.put(autoBackupKey, JSON.stringify(current));
+        let list2 = [];
+        const listRaw2 = await kv.get(backupListKey);
+        if (listRaw2) list2 = JSON.parse(listRaw2);
+        list2.push({ key: autoBackupKey, timestamp: Date.now() });
+        if (list2.length > 10) list2.shift();
+        await kv.put(backupListKey, JSON.stringify(list2));
+      }
+
+      // 写回主数据
+      await kv.put(kvKey, backupData);
+      return new Response(JSON.stringify({ success: true, message: '数据已恢复' }), { headers });
+    } catch (err) {
+      return new Response(JSON.stringify({ error: err.message }), { status: 400, headers });
+    }
+  }
+
+  // ========== PUT：全量覆盖 ==========
   if (request.method === 'PUT') {
     try {
       const body = await request.json();
@@ -203,13 +287,17 @@ export async function onRequest(context) {
       }
       body._version = Math.max(clientVersion, serverVersion) + 1;
       await saveData(body);
+
+      // 触发异步备份（不阻塞）
+      context.waitUntil(tryBackup(body, context));
+
       return new Response(JSON.stringify({ success: true, version: body._version }), { headers });
     } catch (err) {
       return new Response(JSON.stringify({ error: err.message }), { status: 400, headers });
     }
   }
 
-  // ========== PATCH（无版本检查，直接应用操作） ==========
+  // ========== PATCH：增量操作 ==========
   if (request.method === 'PATCH') {
     try {
       const { operations } = await request.json();
@@ -234,6 +322,9 @@ export async function onRequest(context) {
 
       current._version = (current._version || 0) + 1;
       await saveData(current);
+
+      // 触发异步备份
+      context.waitUntil(tryBackup(current, context));
 
       return new Response(JSON.stringify({ success: true, version: current._version }), { headers });
     } catch (err) {
