@@ -5,8 +5,11 @@ export async function onRequest(context) {
     const url = new URL(request.url);
 
     // 公开资源：登录/注册/认证接口
-    const publicPaths = ['/login.html', '/login', '/register.html', '/register', '/api/auth/login', '/api/auth/register'];
-    const isPublic = publicPaths.some(p => url.pathname === p || url.pathname.startsWith(p + '?'));
+    const publicPaths = [
+      '/login.html', '/login', '/register.html', '/register',
+      '/api/auth/login', '/api/auth/register'
+    ];
+    const isPublic = publicPaths.some(p => url.pathname === p || url.pathname.startsWith(p + '/'));
 
     // 检查用户是否已认证
     const cookie = request.headers.get('Cookie') || '';
@@ -32,12 +35,24 @@ export async function onRequest(context) {
       return next();
     }
 
+    // admin 路径特殊处理：永远返回 JSON，绝不重定向
+    if (url.pathname.startsWith('/api/admin')) {
+      if (!isAuthenticated) {
+        return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+          status: 401,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      // 已认证，放行给 admin.js 做进一步角色校验
+      return next();
+    }
+
     // 带扩展名的静态文件放行
     if (/\.\w+$/.test(url.pathname)) {
       return next();
     }
 
-    // 需要认证的请求
+    // 需要认证的其他请求
     if (!isAuthenticated) {
       const accept = request.headers.get('Accept') || '';
       const isPageRequest = accept.includes('text/html');
@@ -91,7 +106,6 @@ async function verifyToken(token, secret) {
   const valid = await crypto.subtle.verify('HMAC', key, signature, data);
   if (!valid) throw new Error('Signature invalid');
 
-  // 解码 payload（UTF-8 安全）
   const payloadBytes = base64UrlDecode(payloadB64);
   const payloadText = new TextDecoder().decode(payloadBytes);
   const payload = JSON.parse(payloadText);
