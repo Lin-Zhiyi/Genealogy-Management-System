@@ -300,6 +300,7 @@
     <div class="menu-item" id="menuSearch" onclick="openSearchDialog()">🔍 搜索</div>
     <span class="separator"></span>
     <div class="menu-item" onclick="openFamilyManageDialog()">👨‍👩‍👧‍👦 家族管理</div>
+    <div class="menu-item" id="menuAdmin" onclick="openAdminDialog()" style="display:none;">👥 用户管理</div>
     <div class="menu-item" onclick="showHelp()">帮助</div>
     <div class="menu-item" id="menuBackup" onclick="openBackupDialog()">💾 备份管理</div>
   </div>
@@ -481,7 +482,7 @@
         const f = appData.families.find(f => f.id === payload.familyId);
         if (f) {
           f.name = payload.newName;
-          if (f.root) f.root.name = payload.newName; // 同步根节点名称，确保左侧树显示最新家族名
+          if (f.root) f.root.name = payload.newName;
         }
         break;
       }
@@ -897,6 +898,11 @@
     const n = findNodeById(root, nid);
     if (!ensureEditPermission(n)) return;
     if (n.isRoot) return;
+    // 编辑用户不能在父亲节点上添加兄弟
+    if (currentUserRole === 'editor' && isFatherOfCurrentUser(n)) {
+      alert('您只能为本人或直系后代添加兄弟');
+      return;
+    }
     const p = findParentNode(root, nid);
     if (!p) return;
     showMemberDialog(null, p);
@@ -1075,6 +1081,29 @@
     const menu = document.getElementById('contextMenu');
     menu.style.left = x + 'px';
     menu.style.top = y + 'px';
+    // 根据节点和角色调整可见菜单项
+    const items = menu.querySelectorAll('.cm-item');
+    const isAdmin = (currentUserRole === 'admin');
+    const isEditor = (currentUserRole === 'editor');
+    const isViewer = (currentUserRole === 'viewer');
+
+    items.forEach(item => {
+      const action = item.getAttribute('onclick');
+      if (isViewer) {
+        item.style.display = 'none';
+        return;
+      }
+      if (isAdmin) {
+        item.style.display = '';
+        return;
+      }
+      // 编辑用户：根据操作类型和节点判断
+      if (action.includes('addChildMember') || action.includes('addAttribute') || action.includes('deleteSelectedMember')) {
+        item.style.display = canEditNode(node) ? '' : 'none';
+      } else if (action.includes('addSiblingMember')) {
+        item.style.display = canAddSibling(node) ? '' : 'none';
+      }
+    });
     menu.classList.add('show');
   }
   document.addEventListener('click', () => document.getElementById('contextMenu').classList.remove('show'));
@@ -1423,6 +1452,50 @@
     }
   }
 
+  // ---------- 用户管理（仅管理员）----------
+  async function openAdminDialog() {
+    try {
+      const res = await fetch('/api/admin/users');
+      if (!res.ok) { alert('获取用户列表失败'); return; }
+      const data = await res.json();
+      const users = data.users || [];
+
+      const overlay = document.createElement('div');
+      overlay.className = 'modal-overlay';
+      let listHtml = users.length === 0
+        ? '<div style="padding:20px;text-align:center;">暂无其他用户</div>'
+        : users.map(u => `<div style="display:flex;justify-content:space-between;padding:8px;border-bottom:1px solid #eee;">
+            <span>${escapeHtml(u.username)} (${u.role === 'editor' ? '编辑用户' : '浏览用户'})</span>
+            <button class="resetPwdBtn btn-primary" data-username="${escapeHtml(u.username)}" style="padding:4px 12px;">重置密码</button>
+          </div>`).join('');
+
+      overlay.innerHTML = `<div class="modal-dialog"><div class="modal-header">用户管理</div><div class="modal-body">${listHtml}</div><div class="modal-footer"><button class="btn-cancel" id="closeAdmin">关闭</button></div></div>`;
+      document.body.appendChild(overlay);
+
+      overlay.querySelector('#closeAdmin').onclick = () => overlay.remove();
+      overlay.querySelectorAll('.resetPwdBtn').forEach(btn => {
+        btn.onclick = async () => {
+          if (!confirm(`确定要将用户 ${btn.dataset.username} 的密码重置为 123456 吗？`)) return;
+          const res = await fetch('/api/admin/reset-password', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username: btn.dataset.username })
+          });
+          if (res.ok) {
+            alert('密码已重置');
+            overlay.remove();
+          } else {
+            const err = await res.json();
+            alert(err.error || '操作失败');
+          }
+        };
+      });
+      overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+    } catch (e) {
+      alert('请求失败：' + e.message);
+    }
+  }
+
   function updateStatusBar(){
     const root=getCurrentRoot(), fam=getCurrentFamily();
     if(selectedNodeId && root){
@@ -1494,14 +1567,27 @@
   // ==================== 角色权限控制 ====================
   function applyRolePermissions() {
     const isAdmin = (currentUserRole === 'admin');
+    // 文件菜单
     const menuFile = document.getElementById('menuFile');
     if (menuFile) menuFile.style.display = isAdmin ? '' : 'none';
+    // 备份管理
     const menuBackup = document.getElementById('menuBackup');
     if (menuBackup) menuBackup.style.display = isAdmin ? '' : 'none';
+    // 用户管理
+    const menuAdmin = document.getElementById('menuAdmin');
+    if (menuAdmin) menuAdmin.style.display = isAdmin ? '' : 'none';
+    // 导出图片
     const btnExportChart = document.getElementById('btnExportChart');
     if (btnExportChart) btnExportChart.style.display = isAdmin ? '' : 'none';
     // 序言按钮始终显示，通过 openPrefaceDialog 内部判断权限
     refreshEditButtons();
+  }
+
+  function isFatherOfCurrentUser(node) {
+    if (currentUserRole !== 'editor') return false;
+    const username = document.getElementById('usernameDisplay').textContent.split(' ')[0];
+    if (!node || !node.children) return false;
+    return node.children.some(child => child.name === username);
   }
 
   function canEditNode(node) {
@@ -1512,11 +1598,8 @@
       const username = document.getElementById('usernameDisplay').textContent.split(' ')[0];
       // 本人
       if (node.name === username) return true;
-      // 父亲：判断该节点的子节点中是否有名字等于 username 的（即该节点是 username 的父亲）
-      if (node.children) {
-        const isParent = node.children.some(child => child.name === username);
-        if (isParent) return true;
-      }
+      // 父亲：该节点的子节点中有名字等于 username 的
+      if (isFatherOfCurrentUser(node)) return true;
       // 直系后代：该节点的某个祖先的名字是 username
       const root = getCurrentRoot();
       let cur = node;
@@ -1531,17 +1614,33 @@
     return false;
   }
 
+  function canAddSibling(node) {
+    if (!node || node.isRoot) return false;
+    if (currentUserRole === 'admin') return true;
+    if (currentUserRole === 'viewer') return false;
+    // 编辑用户：不能在父亲节点上添加兄弟
+    if (isFatherOfCurrentUser(node)) return false;
+    return canEditNode(node);
+  }
+
   function refreshEditButtons() {
     const isAdmin = (currentUserRole === 'admin');
     const isEditor = (currentUserRole === 'editor');
     const node = selectedNodeId ? findNodeById(getCurrentRoot(), selectedNodeId) : null;
     const canEdit = node ? canEditNode(node) : false;
+    const canSibling = node ? canAddSibling(node) : false;
 
     const editButtons = document.querySelectorAll('.edit-btn');
     if (isAdmin) {
       editButtons.forEach(b => b.disabled = false);
     } else if (isEditor) {
-      editButtons.forEach(b => b.disabled = !canEdit);
+      editButtons.forEach(b => {
+        if (b.id === 'btnAddSibling') {
+          b.disabled = !canSibling;
+        } else {
+          b.disabled = !canEdit;
+        }
+      });
     } else {
       editButtons.forEach(b => b.disabled = true);
     }
@@ -1617,6 +1716,7 @@
     window.deleteAllData=deleteAllData;
     window.syncNow = syncNow;
     window.openBackupDialog = openBackupDialog;
+    window.openAdminDialog = openAdminDialog;
   }
   init();
   window.addChildMember=addChildMember; window.addSiblingMember=addSiblingMember;
@@ -1628,6 +1728,7 @@
   window.syncToCloud=syncNow; window.loadFromCloud=loadFromCloud;
   window.selectNode = selectNode;
   window.openBackupDialog = openBackupDialog;
+  window.openAdminDialog = openAdminDialog;
 })();
 </script>
 </body>
