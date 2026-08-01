@@ -1367,6 +1367,52 @@
     document.getElementById('statusCount').textContent = `共 ${memberCount} 位成员，${genCount} 代`;
   }
 
+  // ==================== 分割线拖拽 ====================
+  function setupSash() {
+    // 移动端不启用拖拽（sash 在 mobile-layout 下已隐藏）
+    if (document.body.classList.contains('mobile-layout')) return;
+
+    const sash = document.getElementById('sash');
+    const mainBody = document.getElementById('mainBody');
+    const treePanel = document.getElementById('treePanel');
+
+    let startX = 0;
+    let startWidth = 0;
+    let dragging = false;
+
+    function onMouseMove(e) {
+      if (!dragging) return;
+      e.preventDefault();
+      const dx = e.clientX - startX;
+      let newWidth = startWidth + dx;
+      // 限制最小宽度 180px，最大不超过 mainBody 宽度的一半
+      const maxWidth = mainBody.clientWidth / 2;
+      newWidth = Math.max(180, Math.min(newWidth, maxWidth));
+      treePanel.style.width = newWidth + 'px';
+      // 标记 sash 为活动状态
+      sash.classList.add('active');
+    }
+
+    function onMouseUp() {
+      if (!dragging) return;
+      dragging = false;
+      sash.classList.remove('active');
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+      document.body.style.cursor = '';
+    }
+
+    sash.addEventListener('mousedown', function(e) {
+      e.preventDefault();
+      dragging = true;
+      startX = e.clientX;
+      startWidth = treePanel.getBoundingClientRect().width;
+      document.addEventListener('mousemove', onMouseMove);
+      document.addEventListener('mouseup', onMouseUp);
+      document.body.style.cursor = 'col-resize';
+    });
+  }
+
   document.addEventListener('keydown',function(e){
     if(e.target.tagName==='INPUT'||e.target.tagName==='TEXTAREA'||e.target.tagName==='SELECT') return;
     if(e.key==='Delete'){ e.preventDefault(); if(selectedNodeId) deleteSelectedMember(); }
@@ -1417,6 +1463,7 @@
     });
     loadUserInfo();
     setupPinchZoom();
+    setupSash();   // 启用分割线拖拽
     window.addEventListener('beforeunload', uploadOnClose);
     document.querySelectorAll('.menu-item[data-menu]').forEach(item=>{
       const dd=item.querySelector('.dropdown-menu');
