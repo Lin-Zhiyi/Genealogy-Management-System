@@ -83,14 +83,15 @@ export async function onRequest(context) {
     }
   }
 
-  // ---------- 节点查找 ----------
-  function findNodeInFamilies(data, id) {
-    if (!data || !data.families) return null;
-    for (const fam of data.families) {
-      const found = findNodeInTree(fam.root, id);
-      if (found) return found;
-    }
-    return null;
+  // ---------- 节点查找（限制在指定家族内）----------
+  function findNodeInFamily(family, id) {
+    if (!family || !family.root) return null;
+    return findNodeInTree(family.root, id);
+  }
+
+  function findParentInFamily(family, targetId) {
+    if (!family || !family.root) return null;
+    return findParentInTree(family.root, targetId);
   }
 
   function findNodeInTree(node, id) {
@@ -99,17 +100,6 @@ export async function onRequest(context) {
       for (const child of node.children) {
         const found = findNodeInTree(child, id);
         if (found) return found;
-      }
-    }
-    return null;
-  }
-
-  function findParentInFamilies(data, targetId) {
-    if (!data || !data.families) return null;
-    for (const fam of data.families) {
-      if (fam.root.children) {
-        const parent = findParentInTree(fam.root, targetId);
-        if (parent) return parent;
       }
     }
     return null;
@@ -125,11 +115,21 @@ export async function onRequest(context) {
     return null;
   }
 
-  function findMemberByName(node, name) {
+  // 在全量数据中查找成员（用于权限校验和获取可编辑节点集合等）
+  function findMemberByName(data, name) {
+    if (!data || !data.families) return null;
+    for (const fam of data.families) {
+      const found = findMemberInTree(fam.root, name);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  function findMemberInTree(node, name) {
     if (!node.isRoot && node.name === name) return node;
     if (node.children) {
       for (const child of node.children) {
-        const found = findMemberByName(child, name);
+        const found = findMemberInTree(child, name);
         if (found) return found;
       }
     }
@@ -145,172 +145,166 @@ export async function onRequest(context) {
     }
   }
 
-  // 获取编辑用户有权编辑的节点ID集合
+  // 获取编辑用户有权编辑的节点ID集合（遍历所有家族，但返回所有家族内的可编辑节点）
   function getEditableNodeIds(data, username) {
     const editable = new Set();
     if (!data || !data.families) return editable;
     for (const fam of data.families) {
-      const member = findMemberByName(fam.root, username);
+      const member = findMemberInTree(fam.root, username);
       if (member) {
-        editable.add(member.id); // 本人
-        addDescendants(member, editable); // 所有后代
+        editable.add(member.id);
+        addDescendants(member, editable);
         const parent = findParentInTree(fam.root, member.id);
         if (parent && !parent.isRoot) {
           editable.add(parent.id);
         }
+        // 注意：一个用户可能存在于多个家族，我们只取第一个匹配的
+        // 实际使用中，编辑用户的权限应限定在当前操作的家族内，
+        // 这里返回全局可编辑节点仅用于初步判断，后面在具体操作时会限制在家族内。
         break;
       }
     }
     return editable;
   }
 
-  // 权限校验
+  // 权限校验（根据操作类型和 payload 判断）
   function checkPermission(data, username, role, action, payload) {
     if (role === 'admin') return true;
     if (role === 'viewer') return false;
 
     if (role === 'editor') {
-      switch (action) {
-        case 'addFamily':
-        case 'deleteFamily':
-        case 'renameFamily':
-        case 'setFamilyPreface':
-          return false;
-
-        case 'addChild': {
-          const editableIds = getEditableNodeIds(data, username);
-          return editableIds.has(payload.parentId);
-        }
-        case 'deleteMember': {
-          // 只能删除本人或直系后代，不能删除父亲
-          const member = findNodeInFamilies(data, payload.memberId);
-          if (!member) return false;
-
-          // 检查是否在可编辑集合中（可编辑集合包含本人、后代、父亲）
-          const editableIds = getEditableNodeIds(data, username);
-          if (!editableIds.has(payload.memberId)) return false;
-
-          // 如果是父亲节点，禁止删除（父亲是可编辑的但不可删除）
-          const parent = findParentInFamilies(data, payload.memberId);
-          if (parent && !parent.isRoot && parent.name === username && payload.memberId !== memberOfName(data, username)?.id) {
-            return false;
-          }
-          // 更精确判断：查找用户本人节点，若被删除节点不是用户本人且其父节点姓名等于用户名，则不允许删除（因为那是父亲或父亲的其它子女？父亲其它子女不应该可编辑？按需求父亲只能编辑其本人和其父亲？不对，需求规定只能编辑本人、直系后代、父亲，所以父亲节点下的其他子女（即用户的兄弟姐妹）不在可编辑范围内，因此不会被包含在 editableIds 中，所以这里主要防止删除父亲本人。
-          // 简化：获取用户本人节点ID，如果被删除节点ID等于父亲的ID（即父亲节点），则拒绝。
-          const self = findMemberByName(data, username);
-          if (self) {
-            const father = findParentInFamilies(data, self.id);
-            if (father && payload.memberId === father.id) {
-              return false; // 不允许删除父亲
-            }
-          }
-          return true;
-        }
-        case 'setAttr':
-        case 'setName':
-        case 'deleteAttr': {
-          const editableIds = getEditableNodeIds(data, username);
-          return editableIds.has(payload.memberId);
-        }
-        case 'reorderChildren': {
-          const editableIds = getEditableNodeIds(data, username);
-          return editableIds.has(payload.parentId);
-        }
-        default:
-          return false;
+      // 管理员才能做家族级别的操作
+      if (['addFamily', 'deleteFamily', 'renameFamily', 'setFamilyPreface'].includes(action)) {
+        return false;
       }
+
+      // 对于需要 familyId 的操作，获取该家族内用户的可编辑节点
+      if (payload.familyId) {
+        const family = data.families.find(f => f.id === payload.familyId);
+        if (!family) return false;
+        // 找到用户在该家族内的本人节点
+        const self = findMemberInTree(family.root, username);
+        if (!self) return false;
+        const editableIds = new Set();
+        editableIds.add(self.id);
+        addDescendants(self, editableIds);
+        const parent = findParentInTree(family.root, self.id);
+        if (parent && !parent.isRoot) {
+          editableIds.add(parent.id);
+        }
+
+        switch (action) {
+          case 'addChild':
+          case 'reorderChildren':
+            return editableIds.has(payload.parentId);
+          case 'deleteMember': {
+            if (!editableIds.has(payload.memberId)) return false;
+            // 禁止删除自己的父亲
+            const father = findParentInTree(family.root, self.id);
+            if (father && payload.memberId === father.id) return false;
+            return true;
+          }
+          case 'setAttr':
+          case 'setName':
+          case 'deleteAttr':
+            return editableIds.has(payload.memberId);
+          default:
+            return false;
+        }
+      }
+      // 没有 familyId 的 editor 操作一律拒绝（例如家族级别）
+      return false;
     }
     return false;
   }
 
-  // 辅助：获取姓名对应的成员节点（用于删除权限判断）
-  function memberOfName(data, name) {
-    if (!data || !data.families) return null;
-    for (const fam of data.families) {
-      const found = findMemberByName(fam.root, name);
-      if (found) return found;
-    }
-    return null;
-  }
-
-  function applyOperation(root, op, username, role) {
+  // ---------- 应用单个操作（在数据对象上，已剥离版本号）----------
+  function applyOperation(rootData, op, username, role) {
     const { action, payload } = op;
-    if (!checkPermission(root, username, role, action, payload)) {
+
+    // 权限校验
+    if (!checkPermission(rootData, username, role, action, payload)) {
       throw new Error('权限不足');
     }
+
     switch (action) {
       case 'addChild': {
-        const { parentId, node } = payload;
-        const parent = findNodeInFamilies(root, parentId) || findNodeInTree(root, parentId);
-        if (!parent) throw new Error(`父节点 ${parentId} 不存在`);
+        const family = rootData.families.find(f => f.id === payload.familyId);
+        if (!family) throw new Error('家族不存在');
+        const parent = findNodeInFamily(family, payload.parentId);
+        if (!parent) throw new Error(`父节点 ${payload.parentId} 不存在`);
         if (!parent.children) parent.children = [];
-        parent.children.push(node);
+        parent.children.push(payload.node);
         break;
       }
       case 'deleteMember': {
-        const { memberId } = payload;
-        const parent = findParentInFamilies(root, memberId) || findParentInTree(root, memberId);
-        if (!parent) throw new Error(`要删除的成员 ${memberId} 的父节点不存在`);
-        const idx = parent.children.findIndex(c => c.id === memberId);
+        const family = rootData.families.find(f => f.id === payload.familyId);
+        if (!family) throw new Error('家族不存在');
+        const parent = findParentInFamily(family, payload.memberId);
+        if (!parent) throw new Error(`要删除的成员 ${payload.memberId} 的父节点不存在`);
+        const idx = parent.children.findIndex(c => c.id === payload.memberId);
         if (idx === -1) throw new Error('成员不在父节点中');
         parent.children.splice(idx, 1);
         break;
       }
       case 'setAttr': {
-        const { memberId, attrName, value } = payload;
-        const node = findNodeInFamilies(root, memberId) || findNodeInTree(root, memberId);
-        if (!node) throw new Error(`成员 ${memberId} 不存在`);
+        const family = rootData.families.find(f => f.id === payload.familyId);
+        if (!family) throw new Error('家族不存在');
+        const node = findNodeInFamily(family, payload.memberId);
+        if (!node) throw new Error(`成员 ${payload.memberId} 不存在`);
         if (!node.attributes) node.attributes = [];
-        const existing = node.attributes.find(a => a.name === attrName);
-        if (existing) existing.value = value;
-        else node.attributes.push({ name: attrName, value });
+        const existing = node.attributes.find(a => a.name === payload.attrName);
+        if (existing) existing.value = payload.value;
+        else node.attributes.push({ name: payload.attrName, value: payload.value });
         break;
       }
       case 'setName': {
-        const { memberId, newName } = payload;
-        const node = findNodeInFamilies(root, memberId) || findNodeInTree(root, memberId);
-        if (!node) throw new Error(`成员 ${memberId} 不存在`);
-        node.name = newName;
+        const family = rootData.families.find(f => f.id === payload.familyId);
+        if (!family) throw new Error('家族不存在');
+        const node = findNodeInFamily(family, payload.memberId);
+        if (!node) throw new Error(`成员 ${payload.memberId} 不存在`);
+        node.name = payload.newName;
         break;
       }
       case 'deleteAttr': {
-        const { memberId, attrName } = payload;
-        const node = findNodeInFamilies(root, memberId) || findNodeInTree(root, memberId);
-        if (!node) throw new Error(`成员 ${memberId} 不存在`);
-        if (node.attributes) node.attributes = node.attributes.filter(a => a.name !== attrName);
+        const family = rootData.families.find(f => f.id === payload.familyId);
+        if (!family) throw new Error('家族不存在');
+        const node = findNodeInFamily(family, payload.memberId);
+        if (!node) throw new Error(`成员 ${payload.memberId} 不存在`);
+        if (node.attributes) {
+          node.attributes = node.attributes.filter(a => a.name !== payload.attrName);
+        }
         break;
       }
       case 'addFamily': {
-        root.families.push(payload.family);
+        rootData.families.push(payload.family);
         break;
       }
       case 'deleteFamily': {
-        const { familyId } = payload;
-        const idx = root.families.findIndex(f => f.id === familyId);
-        if (idx === -1) throw new Error(`家族 ${familyId} 不存在`);
-        root.families.splice(idx, 1);
+        const idx = rootData.families.findIndex(f => f.id === payload.familyId);
+        if (idx === -1) throw new Error(`家族 ${payload.familyId} 不存在`);
+        rootData.families.splice(idx, 1);
         break;
       }
       case 'renameFamily': {
-        const { familyId, newName } = payload;
-        const fam = root.families.find(f => f.id === familyId);
-        if (!fam) throw new Error(`家族 ${familyId} 不存在`);
-        fam.name = newName;
+        const fam = rootData.families.find(f => f.id === payload.familyId);
+        if (!fam) throw new Error(`家族 ${payload.familyId} 不存在`);
+        fam.name = payload.newName;
         break;
       }
       case 'setFamilyPreface': {
-        const { familyId, preface } = payload;
-        const fam = root.families.find(f => f.id === familyId);
-        if (!fam) throw new Error(`家族 ${familyId} 不存在`);
-        fam.preface = preface;
+        const fam = rootData.families.find(f => f.id === payload.familyId);
+        if (!fam) throw new Error(`家族 ${payload.familyId} 不存在`);
+        fam.preface = payload.preface;
         break;
       }
       case 'reorderChildren': {
-        const { parentId, newOrder } = payload;
-        const parent = findNodeInFamilies(root, parentId) || findNodeInTree(root, parentId);
-        if (!parent || !parent.children) throw new Error(`父节点 ${parentId} 不存在或无子节点`);
+        const family = rootData.families.find(f => f.id === payload.familyId);
+        if (!family) throw new Error('家族不存在');
+        const parent = findNodeInFamily(family, payload.parentId);
+        if (!parent || !parent.children) throw new Error(`父节点 ${payload.parentId} 不存在或无子节点`);
         const reordered = [];
-        for (const id of newOrder) {
+        for (const id of payload.newOrder) {
           const child = parent.children.find(c => c.id === id);
           if (!child) throw new Error(`子节点 ${id} 不在父节点中`);
           reordered.push(child);
@@ -413,7 +407,7 @@ export async function onRequest(context) {
     }
   }
 
-  // ========== PATCH：增量操作 ==========
+  // ========== PATCH：增量操作（事务性执行） ==========
   if (request.method === 'PATCH') {
     try {
       const { operations } = await request.json();
@@ -424,25 +418,21 @@ export async function onRequest(context) {
         current = { families: [], _version: 0 };
       }
 
-      for (let i = 0; i < operations.length; i++) {
-        const op = operations[i];
-        try {
-          applyOperation(current, op, username, role);
-        } catch (e) {
-          return new Response(JSON.stringify({
-            error: `操作${i}失败: ${e.message}`,
-            appliedCount: i
-          }), { status: 409, headers });
-        }
+      // 1. 深拷贝当前数据，在副本上依次应用所有操作
+      const tempData = JSON.parse(JSON.stringify(current));
+
+      for (const op of operations) {
+        applyOperation(tempData, op, username, role);
       }
 
-      current._version = (current._version || 0) + 1;
-      await saveData(current);
-      context.waitUntil(tryBackup(current, context));
+      // 2. 全部成功，则更新版本并保存
+      tempData._version = (current._version || 0) + 1;
+      await saveData(tempData);
+      context.waitUntil(tryBackup(tempData, context));
 
-      return new Response(JSON.stringify({ success: true, version: current._version }), { headers });
+      return new Response(JSON.stringify({ success: true, version: tempData._version }), { headers });
     } catch (err) {
-      return new Response(JSON.stringify({ error: err.message }), { status: 400, headers });
+      return new Response(JSON.stringify({ error: err.message }), { status: 409, headers });
     }
   }
 
