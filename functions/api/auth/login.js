@@ -1,12 +1,11 @@
 // functions/api/auth/login.js
 
-// 速率限制内存 Map
 const rateLimitMap = new Map();
 
 export async function onRequestPost(context) {
   const { request, env } = context;
 
-  // 速率限制检查
+  // 速率限制
   const clientIP = request.headers.get('CF-Connecting-IP') || 'unknown';
   const now = Date.now();
   const windowMs = 60 * 1000;
@@ -131,10 +130,10 @@ export async function onRequestPost(context) {
     });
   }
 
-  // 生成 JWT
+  // 生成 JWT（包含角色）
   let token;
   try {
-    token = await generateToken({ username, role: user.role }, env.JWT_SECRET, '24h');
+    token = await generateToken({ username, role: user.role || 'viewer' }, env.JWT_SECRET, '24h');
   } catch (e) {
     return new Response(JSON.stringify({ error: `令牌生成失败: ${e.message}` }), {
       status: 500,
@@ -158,7 +157,7 @@ async function sha512(message) {
   return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
-// ---------- JWT 生成（完全支持 UTF-8）----------
+// ---------- JWT 生成 ----------
 async function generateToken(payload, secret, expiresIn) {
   const header = { alg: 'HS256', typ: 'JWT' };
   const now = Math.floor(Date.now() / 1000);
