@@ -18,18 +18,25 @@ export async function onRequest(context) {
     return new Response(null, { headers });
   }
 
-  const kv = env.genealogy_management_system; // 你的 KV 绑定变量名
+  // 获取用户名
+  const username = await getUsernameFromCookie(request, env.JWT_SECRET);
+  if (!username) {
+    return new Response(JSON.stringify({ error: '未登录' }), { status: 401, headers });
+  }
+
+  const kvKey = `family-data-${username}`;
+  const kv = env.genealogy_management_system;
   if (!kv) {
     return new Response(JSON.stringify({ error: 'KV 未绑定' }), { status: 500, headers });
   }
 
   async function getCurrentData() {
-    const raw = await kv.get('family-data');
+    const raw = await kv.get(kvKey);
     return raw ? JSON.parse(raw) : null;
   }
 
   async function saveData(data) {
-    await kv.put('family-data', JSON.stringify(data));
+    await kv.put(kvKey, JSON.stringify(data));
   }
 
   // ---------- 节点查找（支持 families 结构）----------
@@ -172,7 +179,7 @@ export async function onRequest(context) {
     }
   }
 
-  // ========== PUT（全量覆盖，保留强制覆盖） ==========
+  // ========== PUT（全量覆盖） ==========
   if (request.method === 'PUT') {
     try {
       const body = await request.json();
@@ -198,7 +205,7 @@ export async function onRequest(context) {
   // ========== PATCH（无版本检查，直接应用操作） ==========
   if (request.method === 'PATCH') {
     try {
-      const { operations } = await request.json(); // 不再需要 baseVersion
+      const { operations } = await request.json();
       if (!Array.isArray(operations)) throw new Error('operations 必须为数组');
 
       let current = await getCurrentData();
@@ -206,14 +213,11 @@ export async function onRequest(context) {
         current = { families: [], _version: 0 };
       }
 
-      // 依次应用所有操作
       for (let i = 0; i < operations.length; i++) {
         const op = operations[i];
         try {
           applyOperation(current, op);
         } catch (e) {
-          // 如果某个操作失败，返回错误，但之前成功的操作已经修改了 current，这可能导致不一致。
-          // 简单处理：返回失败，丢弃本次所有操作。
           return new Response(JSON.stringify({
             error: `操作${i}失败: ${e.message}`,
             appliedCount: i
@@ -221,7 +225,6 @@ export async function onRequest(context) {
         }
       }
 
-      // 递增版本
       current._version = (current._version || 0) + 1;
       await saveData(current);
 
@@ -232,4 +235,57 @@ export async function onRequest(context) {
   }
 
   return new Response('Method not allowed', { status: 405, headers });
+}
+
+// ---------- JWT 工具函数（与 login.js 一致）----------
+async function getUsernameFromCookie(request, secret) {
+  const cookie = request.headers.get('Cookie') || '';
+  const tokenMatch = cookie.match(/token=([^;]+)/);
+  if (!tokenMatch) return null;
+  try {
+    const { payload } = await verifyToken(tokenMatch[1], secret);
+    return payload.username;
+  } catch {
+    return null;
+  }
+}
+
+async function verifyToken(token, secret) {
+  const encoder = new TextEncoder();
+  const parts = token.split('.');
+  if (parts.length !== 3) throw new Error('Invalid token format');
+
+  const [headerB64, payloadB64, signatureB64] = parts;
+  const signature = base64UrlDecode(signatureB64);
+  const data = encoder.encode(`${headerB64}.${payloadB64}`);
+
+  const key = await crypto.subtle.importKey(
+    'raw',
+    encoder.encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['verify']
+  );
+  const valid = await crypto.subtle.verify('HMAC', key, signature, data);
+  if (!valid) throw new Error('Signature invalid');
+
+  const payloadBytes = base64UrlDecode(payloadB64);
+  const payloadText = new TextDecoder().decode(payloadBytes);
+  const payload = JSON.parse(payloadText);
+
+  if (payload.exp && payload.exp < Date.now() / 1000) throw new Error('Token expired');
+  return { payload };
+}
+
+function base64UrlDecode(str) {
+  let base64 = str.replace(/-/g, '+').replace(/_/g, '/');
+  while (base64.length % 4) {
+    base64 += '=';
+  }
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
 }
