@@ -666,14 +666,23 @@
     });
   }
 
-  window.switchFamily = function(familyId) {
-    if (!familyId || familyId === appData.currentFamilyId) return;
-    appData.currentFamilyId = familyId;
-    selectedNodeId = null; expandedNodeIds.clear();
-    const root = getCurrentRoot(); if (root) expandedNodeIds.add(root.id);
-    saveDataToLocal();
-    renderTree(); refreshDetailView(); updateFamilySelector();
-  };
+  window.switchFamily = async function(familyId) {
+  if (!familyId || familyId === appData.currentFamilyId) return;
+  // 切换前强制同步当前家族的操作
+  if (pendingOperations.length > 0) {
+    await syncNow();
+  }
+  // 清空选中与展开状态
+  appData.currentFamilyId = familyId;
+  selectedNodeId = null;
+  expandedNodeIds.clear();
+  const root = getCurrentRoot();
+  if (root) expandedNodeIds.add(root.id);
+  saveDataToLocal();
+  renderTree();
+  refreshDetailView();
+  updateFamilySelector();
+};
 
   // ---------- 渲染 ----------
   function renderTree() {
