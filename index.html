@@ -301,6 +301,7 @@
     <span class="separator"></span>
     <div class="menu-item" onclick="openFamilyManageDialog()">👨‍👩‍👧‍👦 家族管理</div>
     <div class="menu-item" onclick="showHelp()">帮助</div>
+    <div class="menu-item" onclick="openBackupDialog()">💾 备份管理</div>
   </div>
   <div class="toolbar">
     <select class="family-selector" id="familySelector" onchange="switchFamily(this.value)"></select>
@@ -391,7 +392,7 @@
   let relationViewMode = 'full';
   let currentScale = 1;
   let customUp = 2, customDown = 2;
-  let undoStack = [];                     // 单成员撤销栈
+  let undoStack = [];
   let pendingDeleteAllData = null;
   let autoFitEnabled = false;
 
@@ -992,7 +993,6 @@
         const parentId = parent ? parent.id : (getCurrentRoot() ? getCurrentRoot().id : null);
         if (parentId) {
           addOperation('addChild', { parentId, node: newNode });
-          // 不自动选中新成员
           expandedNodeIds.add(parentId);
         }
       }
@@ -1268,7 +1268,6 @@
         const res=await fetch('/api/auth/change-password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({oldPassword:old,newPassword:p1})});
         const data=await res.json();
         if(res.ok){
-          // 清除本地数据，防止残留
           pendingOperations = [];
           localStorage.removeItem(STORAGE_KEY);
           localStorage.removeItem('has_pending_changes');
@@ -1283,7 +1282,6 @@
   }
 
   function logout(){
-    // 清空待同步队列，防止 beforeunload 上传脏数据
     pendingOperations = [];
     localStorage.removeItem(STORAGE_KEY);
     localStorage.removeItem('has_pending_changes');
@@ -1297,6 +1295,51 @@
     fetch(CLOUD_API_URL, { method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload), keepalive:true }).catch(()=>{});
   }
   function showHelp(){ alert('...'); }
+
+  // ---------- 备份管理 ----------
+  async function openBackupDialog() {
+    try {
+      const res = await fetch('/api/data?action=list_backups');
+      if (!res.ok) { alert('获取备份列表失败'); return; }
+      const data = await res.json();
+      const backups = data.backups || [];
+
+      const overlay = document.createElement('div');
+      overlay.className = 'modal-overlay';
+      let listHtml = backups.length === 0
+        ? '<div style="padding:20px;text-align:center;color:#888;">暂无备份</div>'
+        : backups.map(b => `<div style="display:flex;justify-content:space-between;padding:8px;border-bottom:1px solid #eee;">
+            <span>${new Date(b.timestamp).toLocaleString()}</span>
+            <button data-key="${b.key}" class="restoreBtn btn-primary" style="padding:4px 12px;">恢复此版本</button>
+          </div>`).join('');
+
+      overlay.innerHTML = `<div class="modal-dialog"><div class="modal-header">备份管理（自动每5分钟备份）</div><div class="modal-body">${listHtml}</div><div class="modal-footer"><button class="btn-cancel" id="closeBackup">关闭</button></div></div>`;
+      document.body.appendChild(overlay);
+
+      overlay.querySelector('#closeBackup').onclick = () => overlay.remove();
+      overlay.querySelectorAll('.restoreBtn').forEach(btn => {
+        btn.onclick = async () => {
+          if (!confirm('确定要恢复到该备份吗？当前数据将被覆盖。')) return;
+          const backupKey = btn.dataset.key;
+          const res = await fetch('/api/data?action=restore', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ backupKey })
+          });
+          if (res.ok) {
+            alert('恢复成功！页面将刷新。');
+            location.reload();
+          } else {
+            const err = await res.json();
+            alert('恢复失败：' + (err.error || '未知错误'));
+          }
+        };
+      });
+      overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+    } catch (e) {
+      alert('请求失败：' + e.message);
+    }
+  }
 
   function updateStatusBar(){
     const root=getCurrentRoot(), fam=getCurrentFamily();
@@ -1335,7 +1378,6 @@
     }
   });
 
-  // 编辑保护
   document.addEventListener('focusin', (e) => {
     if (e.target.matches('input, textarea, select')) {
       isUserEditing = true;
@@ -1391,6 +1433,7 @@
     window.changePassword=changePassword; window.logout=logout;
     window.deleteAllData=deleteAllData;
     window.syncNow = syncNow;
+    window.openBackupDialog = openBackupDialog;
   }
   init();
   window.addChildMember=addChildMember; window.addSiblingMember=addSiblingMember;
@@ -1401,6 +1444,7 @@
   window.switchFamily=switchFamily;
   window.syncToCloud=syncNow; window.loadFromCloud=loadFromCloud;
   window.selectNode = selectNode;
+  window.openBackupDialog = openBackupDialog;
 })();
 </script>
 </body>
