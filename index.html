@@ -534,7 +534,7 @@
     return true;
   }
 
-  // ==================== 同步逻辑（携带 baseVersion + 自动 rebase） ====================
+  // ==================== 同步逻辑 ====================
   function scheduleSync() {
     if (syncTimer) clearTimeout(syncTimer);
     if (isUserEditing) {
@@ -547,7 +547,6 @@
   async function syncNow() {
     if (pendingOperations.length === 0) return;
     const ops = [...pendingOperations];
-    const currentBaseVersion = baseVersion; // 记录提交时的版本
     let success = false;
     let retries = 3;
     while (retries-- > 0 && !success) {
@@ -555,7 +554,7 @@
         const res = await fetch(CLOUD_API_URL, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ operations: ops, baseVersion: currentBaseVersion })
+          body: JSON.stringify({ operations: ops })
         });
         if (res.ok) {
           const result = await res.json();
@@ -567,48 +566,31 @@
           saveDataToLocal();
           success = true;
         } else if (res.status === 409) {
-          const err = await res.json();
-          // 如果服务器返回了最新数据，则尝试 rebase（重新应用操作）
-          if (err.latestData) {
-            showInfoBar('⚠️ 检测到其他设备修改，正在尝试自动合并...', 0);
-            try {
-              // 应用云端数据
-              await loadRemoteData(err.latestData, err.latestVersion);
-              // 重新在本地应用未同步的操作
-              const replayOps = [...pendingOperations];
-              let replaySuccess = true;
-              for (const op of replayOps) {
-                if (!localApply(op)) {
-                  replaySuccess = false;
-                  console.warn('操作无法重新应用，已丢弃:', op);
-                  pendingOperations = pendingOperations.filter(o => o !== op);
-                }
+          showInfoBar('⚠️ 数据冲突，本地未同步的修改已丢失，正在更新为云端数据...', 0);
+          try {
+            const cloudRes = await fetch(CLOUD_API_URL);
+            if (cloudRes.ok) {
+              const cloudData = await cloudRes.json();
+              const currentFamId = appData.currentFamilyId;
+              loadRemoteData(cloudData, cloudData._version || 0);
+              if (currentFamId && appData.families.some(f => f.id === currentFamId)) {
+                appData.currentFamilyId = currentFamId;
+              } else if (appData.families.length > 0) {
+                appData.currentFamilyId = appData.families[0].id;
               }
-              if (replaySuccess) {
-                showInfoBar('✅ 自动合并成功，正在提交...', 1500);
-                // 递归提交合并后的操作
-                setTimeout(() => syncNow(), 500);
-              } else {
-                showInfoBar('⚠️ 部分操作因冲突被丢弃，请检查数据', 4000);
-              }
-              pendingOperations = pendingOperations.filter(op => !ops.includes(op));
-              localStorage.removeItem('has_pending_changes');
-              saveDataToLocal();
-              return;
-            } catch (rebaseError) {
-              showInfoBar('❌ 自动合并失败，本地修改可能丢失', 3000);
-              pendingOperations = pendingOperations.filter(op => !ops.includes(op));
-              localStorage.removeItem('has_pending_changes');
+              showInfoBar('✅ 已更新为云端数据', 2000);
+            } else {
+              showInfoBar('❌ 无法获取云端数据', 3000);
             }
-          } else {
-            showInfoBar('⚠️ 同步冲突，本地修改已丢失', 3000);
-            pendingOperations = pendingOperations.filter(op => !ops.includes(op));
-            localStorage.removeItem('has_pending_changes');
+          } catch {
+            showInfoBar('❌ 网络错误', 3000);
           }
+          pendingOperations = pendingOperations.filter(op => !ops.includes(op));
+          localStorage.removeItem('has_pending_changes');
           success = true;
         } else {
-          const errText = await res.json();
-          throw new Error(errText.error || '同步失败');
+          const err = await res.json();
+          throw new Error(err.error || '同步失败');
         }
       } catch (e) {
         if (retries <= 0) {
@@ -919,7 +901,9 @@
       if (!parent) return;
       const idx = parent.children.findIndex(c => c.id === nid);
       if (idx === -1) return;
+      // 创建快照用于撤销（在删除前）
       const snapshot = JSON.parse(JSON.stringify(parent.children[idx]));
+      // 通过 addOperation 执行删除
       if (addOperation('deleteMember', { memberId: nid })) {
         undoStack.push({ node: snapshot, parentId: parent.id });
         if (undoStack.length > 20) undoStack.shift();
@@ -1233,7 +1217,7 @@
       const res = await fetch(CLOUD_API_URL, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ operations: ops, baseVersion: baseVersion })
+        body: JSON.stringify({ operations: ops })
       });
       if (res.ok) {
         const result = await res.json();
@@ -1488,13 +1472,122 @@
     fetch('/api/auth/logout',{method:'POST'}).then(()=>window.location.href='/login.html').catch(()=>window.location.href='/login.html');
   }
 
-  // 安全关闭：仅尝试增量同步，不使用强制 PUT
-  function uploadOnClose() {
-    if (pendingOperations.length === 0) return;
-    const body = JSON.stringify({ operations: pendingOperations, baseVersion: baseVersion });
-    fetch(CLOUD_API_URL, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body, keepalive: true }).catch(() => {});
+  function uploadOnClose(){
+    const payload = JSON.parse(JSON.stringify(appData));
+    payload._forceOverwrite = true;
+    fetch(CLOUD_API_URL, { method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload), keepalive:true }).catch(()=>{});
   }
-  function showHelp(){ alert('帮助内容'); }
+
+  // ========== 替换的帮助窗口 ==========
+  function showHelp() {
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    const helpContent = `族谱管理系统 - 帮助文档
+一、用户角色说明
+本系统共有三种用户角色，不同角色拥有不同的操作权限：
+
+管理员（admin）
+拥有系统全部功能的使用权限
+可以创建、删除、重命名家族
+可以编辑所有家族成员的信息
+可以导入/导出数据、管理备份
+可以管理其他用户（重置密码、删除用户）
+
+编辑用户
+用户名必须与族谱中某个成员的姓名完全一致
+可以编辑以下成员的信息：本人、本人的所有直系后代、本人的父亲
+可以为上述成员添加子成员或兄弟
+不能对父亲节点添加兄弟
+不能新建、删除、重命名家族（只能切换家族）
+不能编辑家族序言、不能导出辈分关系图
+不能使用"文件"菜单中的功能
+
+浏览用户
+只能查看族谱数据，不能进行任何编辑操作
+可以切换家族、查看所有成员的详细信息
+可以查看辈分关系图
+不能编辑家族序言、不能导出辈分关系图
+不能使用"文件"菜单中的功能
+
+二、家族管理
+系统支持创建多个家族，每个家族拥有独立的族谱树。
+切换家族：使用工具栏中的下拉菜单可以切换当前查看的家族
+新建家族（仅管理员）：点击菜单栏"家族管理"，在弹窗中点击"新建家族"
+重命名家族（仅管理员）：在家族管理弹窗中点击对应家族的"重命名"
+删除家族（仅管理员）：在家族管理弹窗中点击对应家族的"删除"
+
+三、成员管理
+添加成员
+选中一个成员后，点击"添加子成员"可以为该成员添加子女
+选中一个成员后，点击"添加兄弟"可以为该成员添加兄弟姐妹
+
+编辑信息
+选中成员后，在右侧"个人信息"选项卡中，双击想要编辑的字段即可修改
+支持编辑的属性包括：姓名、性别、出生日期、出生地、配偶等
+点击"添加信息"可以为成员添加自定义属性
+点击"删除信息"可以删除某个自定义属性
+
+删除成员
+选中成员后点击"删除成员"即可删除该成员及其所有后代
+删除后有撤销按钮可以恢复
+
+子女排序
+选中成员后点击"子女排序"可以调整子女的显示顺序
+
+搜索成员
+点击菜单栏的"搜索"可以按关键字搜索成员
+
+四、辈分关系图
+切换到"辈分关系图"选项卡可以查看家族树状图。
+查看范围：可以选择全图、上下各2代、同辈、自定义代数
+缩放：使用缩放按钮或鼠标滚轮可以放大/缩小视图
+适应屏幕：自动调整图表大小以适应窗口
+导出图片（仅管理员）：将当前关系图导出为PNG图片
+
+五、数据同步与备份
+对族谱数据的修改会自动在几秒内同步到云端
+编辑过程中会暂停自动同步，编辑完成后自动恢复
+
+数据备份（仅管理员）
+系统会在每次数据修改后自动检查是否需要备份（间隔5分钟）
+点击菜单栏"备份管理"可以查看备份列表并恢复到任意备份版本
+
+六、序言功能
+每个家族可以编写一个序言。
+查看序言：任何用户都可以点击工具栏的"序言"按钮查看
+编辑序言（仅管理员）：在序言对话框中直接修改并保存
+
+七、用户管理（仅管理员）
+点击菜单栏的"用户管理"可以管理其他用户。
+重置密码：将指定用户的密码重置为 123456
+删除用户：删除指定用户账号（不可恢复）
+
+八、快捷操作提示
+在左侧族谱树中点击成员即可选中查看
+右键点击成员可弹出快捷菜单，包含添加子成员、添加兄弟、添加信息、删除等操作
+按 Delete 键可以快速删除当前选中的成员
+按 Ctrl+Z 可以撤销最近一次删除操作
+左侧面板和右侧详情面板之间的分割线可以拖拽调整宽度
+
+九、注意事项
+所有编辑操作仅限于您有权限的成员范围内
+删除成员会同时删除其所有后代，请谨慎操作
+建议定期使用备份功能保护数据安全
+退出登录时本地数据会自动清除，下次登录将从云端加载最新数据`;
+
+    overlay.innerHTML = `<div class="modal-dialog" style="width:700px; max-width:95vw;">
+      <div class="modal-header">📖 帮助文档</div>
+      <div class="modal-body" style="max-height:70vh; overflow-y:auto;">
+        <pre style="white-space: pre-wrap; font-family: inherit; font-size: 12.5px; color: #333; line-height: 1.6; margin: 0;">${helpContent}</pre>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-cancel" id="helpClose">关闭</button>
+      </div>
+    </div>`;
+    document.body.appendChild(overlay);
+    overlay.querySelector('#helpClose').onclick = () => overlay.remove();
+    overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+  }
 
   async function openBackupDialog() {
     try {
