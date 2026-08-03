@@ -352,6 +352,7 @@
             <span>缩放：</span><button onclick="zoomIn()">➕</button><button onclick="zoomOut()">➖</button>
             <button onclick="zoomToFit()" id="btnFitScreen">适应屏幕</button>
             <button onclick="zoomReset()" id="btnOriginalSize">原始尺寸</button>
+            <button onclick="exportChartImage()" title="导出完整辈分关系图" style="display:none;">📷 导出图片</button>
           </div>
         </div>
         <div class="org-chart" id="orgChartContainer">
@@ -405,7 +406,7 @@
 
   if (/Mobi|Android/i.test(navigator.userAgent)) document.body.classList.add('mobile-layout');
 
-  function generateId() { return 'n' + Date.now() + Math.random().toString(36).substring(2, 10); }
+  function generateId() { return 'n' + Date.now() + Math.random().toString(36).substr(2, 8); }
   function getCurrentFamily() {
     if (!appData.currentFamilyId || appData.families.length === 0) return null;
     return appData.families.find(f => f.id === appData.currentFamilyId) || null;
@@ -481,11 +482,7 @@
       case 'deleteFamily': { appData.families = appData.families.filter(f => f.id !== payload.familyId); return true; }
       case 'renameFamily': {
         const f = appData.families.find(f => f.id === payload.familyId);
-        if (f) {
-          f.name = payload.newName;
-          if (f.root) f.root.name = payload.newName;
-          return true;
-        }
+        if (f) { f.name = payload.newName; if (f.root) f.root.name = payload.newName; return true; }
         return false;
       }
       case 'setFamilyPreface': { const f = appData.families.find(f => f.id === payload.familyId); if (f) { f.preface = payload.preface; return true; } return false; }
@@ -537,7 +534,7 @@
     return true;
   }
 
-  // ==================== 同步逻辑（已修复） ====================
+  // ==================== 同步逻辑 ====================
   function scheduleSync() {
     if (syncTimer) clearTimeout(syncTimer);
     if (isUserEditing) {
@@ -550,17 +547,14 @@
   async function syncNow() {
     if (pendingOperations.length === 0) return;
     const ops = [...pendingOperations];
+    let success = false;
     let retries = 3;
-    while (retries-- > 0) {
+    while (retries-- > 0 && !success) {
       try {
-        // 修复1：在请求体中携带当前版本号
         const res = await fetch(CLOUD_API_URL, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            version: baseVersion,
-            operations: ops
-          })
+          body: JSON.stringify({ operations: ops })
         });
         if (res.ok) {
           const result = await res.json();
@@ -570,13 +564,30 @@
             localStorage.removeItem('has_pending_changes');
           }
           saveDataToLocal();
-          return; // 成功，跳出
+          success = true;
         } else if (res.status === 409) {
-          // 修复2：版本冲突时，不再覆盖本地数据，只提示用户
-          console.warn('同步冲突：本地版本' + baseVersion + '与服务器不匹配');
-          showInfoBar('⚠️ 数据冲突：您的修改与他人冲突，请稍后重试或导出备份后刷新', 5000);
-          // 不清空 pendingOperations，不覆盖 appData
-          return; // 结束同步，保留本地修改
+          showInfoBar('⚠️ 数据冲突，本地未同步的修改已丢失，正在更新为云端数据...', 0);
+          try {
+            const cloudRes = await fetch(CLOUD_API_URL);
+            if (cloudRes.ok) {
+              const cloudData = await cloudRes.json();
+              const currentFamId = appData.currentFamilyId;
+              loadRemoteData(cloudData, cloudData._version || 0);
+              if (currentFamId && appData.families.some(f => f.id === currentFamId)) {
+                appData.currentFamilyId = currentFamId;
+              } else if (appData.families.length > 0) {
+                appData.currentFamilyId = appData.families[0].id;
+              }
+              showInfoBar('✅ 已更新为云端数据', 2000);
+            } else {
+              showInfoBar('❌ 无法获取云端数据', 3000);
+            }
+          } catch {
+            showInfoBar('❌ 网络错误', 3000);
+          }
+          pendingOperations = pendingOperations.filter(op => !ops.includes(op));
+          localStorage.removeItem('has_pending_changes');
+          success = true;
         } else {
           const err = await res.json();
           throw new Error(err.error || '同步失败');
@@ -638,17 +649,14 @@
       if (res.ok) {
         const cloudData = await res.json();
         if (cloudData.families && Array.isArray(cloudData.families)) {
-          // 若有未同步修改，先尝试同步
           if (localStorage.getItem('has_pending_changes') === '1') {
             showInfoBar('📡 正在同步本地修改...', 0);
             await syncNow();
-            // 同步后仍存在未同步（冲突），保留本地数据
             if (localStorage.getItem('has_pending_changes') === '1') {
-              showInfoBar('⚠️ 同步未完成，保留本地数据，云端数据未加载', 4000);
+              showInfoBar('⚠️ 同步失败，保留本地数据，云端数据未加载', 4000);
               return;
             }
           }
-          // 无冲突或同步完成，用云端数据更新
           await loadRemoteData(cloudData, cloudData._version || 0);
         }
       }
@@ -893,7 +901,9 @@
       if (!parent) return;
       const idx = parent.children.findIndex(c => c.id === nid);
       if (idx === -1) return;
+      // 创建快照用于撤销（在删除前）
       const snapshot = JSON.parse(JSON.stringify(parent.children[idx]));
+      // 通过 addOperation 执行删除
       if (addOperation('deleteMember', { memberId: nid })) {
         undoStack.push({ node: snapshot, parentId: parent.id });
         if (undoStack.length > 20) undoStack.shift();
@@ -1207,7 +1217,7 @@
       const res = await fetch(CLOUD_API_URL, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ version: baseVersion, operations: ops })
+        body: JSON.stringify({ operations: ops })
       });
       if (res.ok) {
         const result = await res.json();
@@ -1362,13 +1372,11 @@
   function exportChartImage(){
     const orgTree=document.getElementById('orgTree'), container=document.getElementById('orgChartContainer');
     if(!orgTree||!container) return;
-    const prevT=orgTree.style.transform, prevO=container.style.overflow, prevW=container.style.width, prevH=container.style.height, prevAutoFit=autoFitEnabled;
+    const prevT=orgTree.style.transform, prevO=container.style.overflow, prevW=container.style.width, prevH=container.style.height;
     const fw=orgTree.scrollWidth+60, fh=orgTree.scrollHeight+60;
     orgTree.style.transform='scale(1)'; container.style.overflow='visible'; container.style.width=fw+'px'; container.style.height=fh+'px';
     const nodes=[...container.querySelectorAll('.org-node')]; const shadows=nodes.map(n=>({n,bs:n.style.boxShadow})); nodes.forEach(n=>n.style.boxShadow='none');
-    html2canvas(container,{
-      backgroundColor:'#ffffff', scale:2, allowTaint:false, useCORS:true, logging:false,
-      width:fw, height:fh,
+    html2canvas(container,{backgroundColor:'#ffffff',scale:2,allowTaint:false,useCORS:true,logging:false,width:fw,height:fh,windowWidth:fw,windowHeight:fh,
       onclone:clonedDoc=>{
         const cc=clonedDoc.getElementById('orgChartContainer'); if(cc){cc.style.overflow='visible';cc.style.width=fw+'px';cc.style.height=fh+'px';cc.style.background='#ffffff';}
         const ct=clonedDoc.getElementById('orgTree'); if(ct){ct.style.transform='scale(1)';ct.style.background='#ffffff';}
@@ -1376,10 +1384,9 @@
       }
     }).then(canvas=>{
       orgTree.style.transform=prevT; container.style.overflow=prevO; container.style.width=prevW; container.style.height=prevH;
-      autoFitEnabled=prevAutoFit; updateZoomButtons();
       shadows.forEach(s=>s.n.style.boxShadow=s.bs);
       const a=document.createElement('a'); a.download='辈分关系图.png'; a.href=canvas.toDataURL('image/png'); a.click();
-    }).catch(err=>{ orgTree.style.transform=prevT; container.style.overflow=prevO; container.style.width=prevW; container.style.height=prevH; autoFitEnabled=prevAutoFit; updateZoomButtons(); shadows.forEach(s=>s.n.style.boxShadow=s.bs); alert('导出失败:'+err); });
+    }).catch(err=>{ orgTree.style.transform=prevT; container.style.overflow=prevO; container.style.width=prevW; container.style.height=prevH; shadows.forEach(s=>s.n.style.boxShadow=s.bs); alert('导出失败:'+err); });
   }
 
   function openSearchDialog(){
@@ -1471,6 +1478,7 @@
     fetch(CLOUD_API_URL, { method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload), keepalive:true }).catch(()=>{});
   }
 
+  // ========== 替换的帮助窗口 ==========
   function showHelp() {
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
