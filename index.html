@@ -258,7 +258,6 @@
     .undo-bar button, .info-bar button {
       background: #0078d4; color: #fff; border: none; padding: 4px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; margin-left: auto;
     }
-    /* 冲突处理栏样式 */
     .conflict-bar {
       position: absolute; top: 0; left: 0; right: 0; background: #fff3cd;
       border-bottom: 2px solid #ffc107; padding: 10px 14px; display: flex; align-items: center;
@@ -283,7 +282,7 @@
 <div class="app-window" id="appWindow">
   <div class="title-bar">
     <div class="app-icon">林</div>
-    <span class="app-title">族谱管理系统 <span class="app-version">v1.0</span></span>
+    <span class="app-title">源锦族谱管理系统 <span class="app-version">v1.0</span></span>
     <div class="user-area" id="userArea">
       <span class="username" id="usernameDisplay">未登录</span>
       <button onclick="changePassword()">修改密码</button>
@@ -312,8 +311,8 @@
     <span class="separator"></span>
     <div class="menu-item" onclick="openFamilyManageDialog()">👨‍👩‍👧‍👦 家族管理</div>
     <div class="menu-item" id="menuAdmin" onclick="openAdminDialog()" style="display:none;">👥 用户管理</div>
-    <div class="menu-item" onclick="showHelp()">帮助</div>
     <div class="menu-item" id="menuBackup" onclick="openBackupDialog()">💾 备份管理</div>
+    <div class="menu-item" onclick="showHelp()">帮助</div>
   </div>
   <div class="toolbar">
     <select class="family-selector" id="familySelector" onchange="switchFamily(this.value)"></select>
@@ -415,7 +414,6 @@
   let isUserEditing = false;
   let currentUserRole = 'viewer';
 
-  // 冲突时暂存的云端数据
   let conflictCloudData = null;
 
   if (/Mobi|Android/i.test(navigator.userAgent)) document.body.classList.add('mobile-layout');
@@ -461,7 +459,6 @@
     return max + 1;
   }
 
-  // ========== 核心重构：操作日志（强制绑定当前家族） ==========
   function localApply(op) {
     const root = getCurrentRoot();
     if (!root) return false;
@@ -521,21 +518,11 @@
   function addOperation(action, payload) {
     const requiresRoot = ['addChild','deleteMember','setAttr','setName','deleteAttr','reorderChildren'];
     if (requiresRoot.includes(action)) {
-      if (!getCurrentRoot()) {
-        alert('请先选择一个家族');
-        return false;
-      }
+      if (!getCurrentRoot()) { alert('请先选择一个家族'); return false; }
       if (!payload.familyId) payload.familyId = appData.currentFamilyId;
     }
-
     const op = { action, payload };
-    if (!localApply(op)) {
-      if (requiresRoot.includes(action)) {
-        alert('操作失败，请刷新页面后重试');
-      }
-      return false;
-    }
-
+    if (!localApply(op)) { if (requiresRoot.includes(action)) { alert('操作失败，请刷新页面后重试'); } return false; }
     pendingOperations.push(op);
     renderTree();
     refreshDetailView();
@@ -548,17 +535,13 @@
     return true;
   }
 
-  // ==================== 同步逻辑 ====================
   function scheduleSync() {
     if (syncTimer) clearTimeout(syncTimer);
-    if (isUserEditing) {
-      syncTimer = setTimeout(() => scheduleSync(), 2000);
-      return;
-    }
+    if (isUserEditing) { syncTimer = setTimeout(() => scheduleSync(), 2000); return; }
     syncTimer = setTimeout(() => syncNow(), 1500);
   }
 
-  // ==================== 修复后的 syncNow 函数 ====================
+  // ★ 冲突修复：优先使用409响应中的latestData
   async function syncNow() {
     if (pendingOperations.length === 0) return;
     const ops = [...pendingOperations];
@@ -575,33 +558,38 @@
           const result = await res.json();
           baseVersion = result.version;
           pendingOperations = pendingOperations.filter(op => !ops.includes(op));
-          if (pendingOperations.length === 0) {
-            localStorage.removeItem('has_pending_changes');
-          }
+          if (pendingOperations.length === 0) { localStorage.removeItem('has_pending_changes'); }
           saveDataToLocal();
           success = true;
         } else if (res.status === 409) {
-          // ---------- 冲突处理（修改重点）----------
-          let cloudSuccess = false;
+          let cloudDataFromConflict = null;
           try {
-            const cloudRes = await fetch(CLOUD_API_URL);
-            if (cloudRes.ok) {
-              conflictCloudData = await cloudRes.json();
-              cloudSuccess = true;
-            } else if (cloudRes.status === 401) {
-              showInfoBar('❌ 登录已过期，请重新登录', 5000);
-            } else {
-              const errText = await cloudRes.text();
-              showInfoBar(`❌ 无法获取云端数据 (${cloudRes.status}): ${errText}`, 5000);
+            const conflictBody = await res.json();
+            if (conflictBody.latestData && conflictBody.latestData.families) {
+              cloudDataFromConflict = conflictBody.latestData;
+              cloudDataFromConflict._version = conflictBody.latestVersion;
             }
-          } catch (err) {
-            showInfoBar(`❌ 获取云端数据时发生网络错误: ${err.message}`, 5000);
-          }
-
-          if (cloudSuccess) {
+          } catch (parseErr) {}
+          if (cloudDataFromConflict) {
+            conflictCloudData = cloudDataFromConflict;
             showConflictBar();
           } else {
-            showInfoBar('⚠️ 版本冲突且无法获取云端版本，本地修改已保留，请稍后重试', 5000);
+            let cloudSuccess = false;
+            try {
+              const cloudRes = await fetch(CLOUD_API_URL);
+              if (cloudRes.ok) {
+                conflictCloudData = await cloudRes.json();
+                cloudSuccess = true;
+              } else if (cloudRes.status === 401) {
+                showInfoBar('❌ 登录已过期，请重新登录', 5000);
+              } else {
+                const errText = await cloudRes.text();
+                showInfoBar(`❌ 无法获取云端数据 (${cloudRes.status}): ${errText}`, 5000);
+              }
+            } catch (err) {
+              showInfoBar(`❌ 获取云端数据时发生网络错误: ${err.message}`, 5000);
+            }
+            if (cloudSuccess) { showConflictBar(); } else { showInfoBar('⚠️ 版本冲突且无法获取云端版本，本地修改已保留，请稍后重试', 5000); }
           }
           break;
         } else if (res.status === 401) {
@@ -612,11 +600,7 @@
           throw new Error(err.error || `HTTP ${res.status}`);
         }
       } catch (e) {
-        if (retries <= 0) {
-          showInfoBar(`❌ 同步失败: ${e.message}，请稍后点击"同步"按钮重试`, 5000);
-        } else {
-          await new Promise(r => setTimeout(r, 500));
-        }
+        if (retries <= 0) { showInfoBar(`❌ 同步失败: ${e.message}，请稍后点击"同步"按钮重试`, 5000); } else { await new Promise(r => setTimeout(r, 500)); }
       }
     }
   }
@@ -624,7 +608,6 @@
   function showConflictBar() {
     const existing = document.querySelector('.conflict-bar');
     if (existing) existing.remove();
-
     const bar = document.createElement('div');
     bar.className = 'conflict-bar';
     bar.innerHTML = `
@@ -634,11 +617,7 @@
       <button id="conflictDismiss" class="cancel-btn">忽略</button>
     `;
     document.getElementById('appWindow').prepend(bar);
-
-    document.getElementById('conflictRetry').onclick = () => {
-      bar.remove();
-      syncNow();
-    };
+    document.getElementById('conflictRetry').onclick = () => { bar.remove(); syncNow(); };
     document.getElementById('conflictUseCloud').onclick = () => {
       bar.remove();
       if (conflictCloudData && conflictCloudData.families) {
@@ -647,12 +626,9 @@
         showInfoBar('✅ 已加载云端最新数据，本地修改已丢弃', 3000);
       }
     };
-    document.getElementById('conflictDismiss').onclick = () => {
-      bar.remove();
-    };
+    document.getElementById('conflictDismiss').onclick = () => { bar.remove(); };
   }
 
-  // ==================== 数据加载 ====================
   function loadData() {
     const s = localStorage.getItem(STORAGE_KEY);
     if (s) {
@@ -661,15 +637,9 @@
         baseVersion = appData._version || 0;
         if (!appData.families || !Array.isArray(appData.families)) throw new Error();
         appData.families.forEach(f => { if (f.preface === undefined) f.preface = ''; });
-        if (appData.families.length === 0) {
-          appData.currentFamilyId = null;
-        } else if (!appData.currentFamilyId || !appData.families.find(f=>f.id===appData.currentFamilyId)) {
-          appData.currentFamilyId = appData.families[0].id;
-        }
+        if (appData.families.length === 0) { appData.currentFamilyId = null; } else if (!appData.currentFamilyId || !appData.families.find(f=>f.id===appData.currentFamilyId)) { appData.currentFamilyId = appData.families[0].id; }
       } catch (e) { appData = { families: [], currentFamilyId: null }; }
-    } else {
-      appData = { families: [], currentFamilyId: null };
-    }
+    } else { appData = { families: [], currentFamilyId: null }; }
     saveDataToLocal();
     updateFamilySelector();
   }
@@ -680,13 +650,9 @@
     baseVersion = version;
     pendingOperations = [];
     selectedNodeId = null; expandedNodeIds.clear();
-    if (savedFamilyId && appData.families.some(f => f.id === savedFamilyId)) {
-      appData.currentFamilyId = savedFamilyId;
-    } else if (appData.families.length > 0) {
-      appData.currentFamilyId = appData.families[0].id;
-    } else {
-      appData.currentFamilyId = null;
-    }
+    if (savedFamilyId && appData.families.some(f => f.id === savedFamilyId)) { appData.currentFamilyId = savedFamilyId; }
+    else if (appData.families.length > 0) { appData.currentFamilyId = appData.families[0].id; }
+    else { appData.currentFamilyId = null; }
     const root = getCurrentRoot(); if (root) expandedNodeIds.add(root.id);
     saveDataToLocal();
     renderTree(); refreshDetailView(); updateFamilySelector();
@@ -710,7 +676,7 @@
           await loadRemoteData(cloudData, cloudData._version || 0);
         }
       }
-    } catch (e) { /* 离线 */ }
+    } catch (e) {}
   }
 
   function updateFamilySelector() {
@@ -729,9 +695,7 @@
 
   window.switchFamily = async function(familyId) {
     if (!familyId || familyId === appData.currentFamilyId) return;
-    if (pendingOperations.length > 0) {
-      await syncNow();
-    }
+    if (pendingOperations.length > 0) { await syncNow(); }
     appData.currentFamilyId = familyId;
     selectedNodeId = null; expandedNodeIds.clear();
     const root = getCurrentRoot(); if (root) expandedNodeIds.add(root.id);
@@ -740,7 +704,6 @@
     refreshEditButtons();
   };
 
-  // ---------- 渲染 ----------
   function renderTree() {
     const treeRoot = document.getElementById('treeRoot'); treeRoot.innerHTML = '';
     const root = getCurrentRoot(); if (!root) { treeRoot.innerHTML = '<div style="padding:20px; color:#888;">暂无家族数据</div>'; return; }
@@ -789,23 +752,14 @@
     document.getElementById('detailTitle').innerHTML = node
       ? `👤 ${escapeHtml(node.name)}${gen > 0 ? `<span style="font-size:10px; color:#444; margin-left:6px;">(第${gen}代)</span>` : ''}`
       : '请选择一个成员';
-    
     const detailPathEl = document.getElementById('detailPath');
     if (node && !node.isRoot) {
       const ancestors = [];
       let cur = node;
-      while (cur) {
-        if (!cur.isRoot) ancestors.unshift({ id: cur.id, name: cur.name });
-        cur = findParentNode(getCurrentRoot(), cur.id);
-      }
-      const pathHtml = ancestors.map(a =>
-        `<a href="#" onclick="window.selectNode('${a.id}'); return false;" style="color:#0078d4; text-decoration:none; cursor:pointer;">${escapeHtml(a.name)}</a>`
-      ).join(' <span style="color:#888;">></span> ');
+      while (cur) { if (!cur.isRoot) ancestors.unshift({ id: cur.id, name: cur.name }); cur = findParentNode(getCurrentRoot(), cur.id); }
+      const pathHtml = ancestors.map(a => `<a href="#" onclick="window.selectNode('${a.id}'); return false;" style="color:#0078d4; text-decoration:none; cursor:pointer;">${escapeHtml(a.name)}</a>`).join(' <span style="color:#888;">></span> ');
       detailPathEl.innerHTML = '代际: ' + pathHtml;
-    } else {
-      detailPathEl.textContent = '';
-    }
-
+    } else { detailPathEl.textContent = ''; }
     const empty = document.getElementById('emptyState'), table = document.getElementById('attrTable'), tbody = document.getElementById('attrTableBody');
     if (!node || node.isRoot) { empty.style.display = 'flex'; table.style.display = 'none'; return; }
     empty.style.display = 'none'; table.style.display = 'table'; tbody.innerHTML = '';
@@ -878,19 +832,11 @@
       let newVal = input.value.trim();
       if (fieldType === 'select' && newVal !== '男' && newVal !== '女') { alert('性别只能为"男"或"女"'); input.focus(); return; }
       if (fieldType === 'date' && newVal && !isDateValid(newVal)) { alert('出生日期不能晚于今天'); input.focus(); return; }
-      if (fieldName === '姓名' && newVal && newVal !== node.name) {
-        addOperation('setName', { memberId: node.id, newName: newVal });
-      } else if (attrName) {
-        addOperation('setAttr', { memberId: node.id, attrName, value: newVal });
-      }
-      isUserEditing = false;
-      scheduleSync();
+      if (fieldName === '姓名' && newVal && newVal !== node.name) { addOperation('setName', { memberId: node.id, newName: newVal }); }
+      else if (attrName) { addOperation('setAttr', { memberId: node.id, attrName, value: newVal }); }
+      isUserEditing = false; scheduleSync();
     };
-    input.addEventListener('blur', () => {
-      isUserEditing = false;
-      scheduleSync();
-      save();
-    });
+    input.addEventListener('blur', () => { isUserEditing = false; scheduleSync(); save(); });
     input.addEventListener('keydown', e => { if (e.key==='Enter' && fieldType!=='textarea') { e.preventDefault(); save(); } });
   }
 
@@ -900,26 +846,14 @@
     const currentVal = node.attributes[idx]?.value || '';
     const input = document.createElement('input'); input.value = currentVal; td.innerHTML = ''; td.appendChild(input); input.focus();
     const save = () => {
-      if (node.attributes[idx]) {
-        addOperation('setAttr', { memberId: node.id, attrName: node.attributes[idx].name, value: input.value.trim() });
-      }
-      isUserEditing = false;
-      scheduleSync();
+      if (node.attributes[idx]) { addOperation('setAttr', { memberId: node.id, attrName: node.attributes[idx].name, value: input.value.trim() }); }
+      isUserEditing = false; scheduleSync();
     };
-    input.addEventListener('blur', () => {
-      isUserEditing = false;
-      scheduleSync();
-      save();
-    });
+    input.addEventListener('blur', () => { isUserEditing = false; scheduleSync(); save(); });
     input.addEventListener('keydown', e => { if (e.key==='Enter') { e.preventDefault(); save(); } });
   }
 
-  // ---------- 编辑操作（权限校验）----------
-  function ensureEditPermission(node) {
-    if (!node) { alert('请先选择一个成员'); return false; }
-    if (!canEditNode(node)) { alert('您没有编辑该成员的权限'); return false; }
-    return true;
-  }
+  function ensureEditPermission(node) { if (!node) { alert('请先选择一个成员'); return false; } if (!canEditNode(node)) { alert('您没有编辑该成员的权限'); return false; } return true; }
 
   function addAttribute() {
     if (!selectedNodeId || !getCurrentRoot()) { alert('请先选择一个成员'); return; }
@@ -975,10 +909,7 @@
     const n = findNodeById(root, nid);
     if (!ensureEditPermission(n)) return;
     if (n.isRoot) return;
-    if (currentUserRole === 'editor' && isFatherOfCurrentUser(n)) {
-      alert('您只能为本人或直系后代添加兄弟');
-      return;
-    }
+    if (currentUserRole === 'editor' && isFatherOfCurrentUser(n)) { alert('您只能为本人或直系后代添加兄弟'); return; }
     const p = findParentNode(root, nid);
     if (!p) return;
     showMemberDialog(null, p);
@@ -1012,7 +943,6 @@
     if (dur > 0) setTimeout(() => { if (bar.parentNode) bar.remove(); }, dur);
   }
 
-  // 排序、序言、家族管理
   function openSortDialog() {
     if (!selectedNodeId || !getCurrentRoot()) return;
     const node = findNodeById(getCurrentRoot(), selectedNodeId);
@@ -1046,14 +976,8 @@
     document.body.appendChild(overlay);
     if (isAdmin) {
       overlay.querySelector('#prefaceCancel').onclick = () => overlay.remove();
-      overlay.querySelector('#prefaceSave').onclick = () => {
-        const newPreface = overlay.querySelector('#prefaceTextarea').value;
-        addOperation('setFamilyPreface', { familyId: fam.id, preface: newPreface });
-        overlay.remove();
-      };
-    } else {
-      overlay.querySelector('#prefaceCancel').onclick = () => overlay.remove();
-    }
+      overlay.querySelector('#prefaceSave').onclick = () => { const newPreface = overlay.querySelector('#prefaceTextarea').value; addOperation('setFamilyPreface', { familyId: fam.id, preface: newPreface }); overlay.remove(); };
+    } else { overlay.querySelector('#prefaceCancel').onclick = () => overlay.remove(); }
     overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
   }
 
@@ -1121,11 +1045,7 @@
       <div class="form-group"><label>备注</label><input type="text" id="dNote" value="${escapeHtml(getAttr(node,'备注'))}" style="width:100%;padding:8px;"></div>
     </div><div class="modal-footer"><button class="btn-cancel" id="dCancel">取消</button><button class="btn-primary" id="dOk">${isEdit?'保存':'添加'}</button></div></div>`;
     document.body.appendChild(overlay);
-    const close = () => {
-      overlay.remove();
-      isUserEditing = false;
-      scheduleSync();
-    };
+    const close = () => { overlay.remove(); isUserEditing = false; scheduleSync(); };
     overlay.querySelector('#dCancel').onclick = close;
     overlay.querySelector('#dOk').onclick = () => {
       const name = overlay.querySelector('#dName').value.trim(); if (!name) { alert('请输入姓名'); return; }
@@ -1134,20 +1054,12 @@
       if (isEdit) {
         if (name !== existing.name) addOperation('setName', { memberId: existing.id, newName: name });
         const oldAttrs = existing.attributes || [];
-        for (const attr of attrs) {
-          const old = oldAttrs.find(a => a.name === attr.name);
-          if (!old || old.value !== attr.value) addOperation('setAttr', { memberId: existing.id, attrName: attr.name, value: attr.value });
-        }
-        for (const old of oldAttrs) {
-          if (!attrs.some(a => a.name === old.name)) addOperation('deleteAttr', { memberId: existing.id, attrName: old.name });
-        }
+        for (const attr of attrs) { const old = oldAttrs.find(a => a.name === attr.name); if (!old || old.value !== attr.value) addOperation('setAttr', { memberId: existing.id, attrName: attr.name, value: attr.value }); }
+        for (const old of oldAttrs) { if (!attrs.some(a => a.name === old.name)) addOperation('deleteAttr', { memberId: existing.id, attrName: old.name }); }
       } else {
         const newNode = { id: generateId(), name, attributes: attrs, children: [] };
         const parentId = parent ? parent.id : (getCurrentRoot() ? getCurrentRoot().id : null);
-        if (parentId) {
-          addOperation('addChild', { parentId, node: newNode });
-          expandedNodeIds.add(parentId);
-        }
+        if (parentId) { addOperation('addChild', { parentId, node: newNode }); expandedNodeIds.add(parentId); }
       }
       close();
       refreshEditButtons();
@@ -1155,51 +1067,25 @@
     overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
   }
 
-  // ---------- 右键菜单 ----------
   function showContextMenu(x, y, node) {
     const menu = document.getElementById('contextMenu');
     menu.style.left = x + 'px';
     menu.style.top = y + 'px';
-
     const items = menu.querySelectorAll('.cm-item');
     const isAdmin = (currentUserRole === 'admin');
     const isViewer = (currentUserRole === 'viewer');
     let hasVisible = false;
-
     items.forEach(item => {
       const action = item.getAttribute('onclick');
-      if (isViewer) {
-        item.style.display = 'none';
-        return;
-      }
-      if (isAdmin) {
-        item.style.display = '';
-        hasVisible = true;
-        return;
-      }
+      if (isViewer) { item.style.display = 'none'; return; }
+      if (isAdmin) { item.style.display = ''; hasVisible = true; return; }
       if (action.includes('addChildMember') || action.includes('addAttribute') || action.includes('deleteSelectedMember')) {
-        if (canEditNode(node)) {
-          item.style.display = '';
-          hasVisible = true;
-        } else {
-          item.style.display = 'none';
-        }
+        if (canEditNode(node)) { item.style.display = ''; hasVisible = true; } else { item.style.display = 'none'; }
       } else if (action.includes('addSiblingMember')) {
-        if (canAddSibling(node)) {
-          item.style.display = '';
-          hasVisible = true;
-        } else {
-          item.style.display = 'none';
-        }
-      } else {
-        item.style.display = 'none';
-      }
+        if (canAddSibling(node)) { item.style.display = ''; hasVisible = true; } else { item.style.display = 'none'; }
+      } else { item.style.display = 'none'; }
     });
-
-    if (!hasVisible) {
-      menu.classList.remove('show');
-      return;
-    }
+    if (!hasVisible) { menu.classList.remove('show'); return; }
     menu.classList.add('show');
   }
   document.addEventListener('click', () => document.getElementById('contextMenu').classList.remove('show'));
@@ -1220,10 +1106,7 @@
           data._forceOverwrite = true;
           try {
             const res = await fetch(CLOUD_API_URL, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
-            if (!res.ok) {
-              const err = await res.json();
-              throw new Error(err.error || '导入失败');
-            }
+            if (!res.ok) { const err = await res.json(); throw new Error(err.error || '导入失败'); }
             const result = await res.json();
             baseVersion = result.version;
             data._version = result.version;
@@ -1233,9 +1116,7 @@
             const root = getCurrentRoot(); if (root) expandedNodeIds.add(root.id);
             saveDataToLocal(); renderTree(); refreshDetailView(); updateFamilySelector(); switchTab('properties');
             refreshEditButtons();
-          } catch (err) {
-            alert('导入失败: ' + err.message);
-          }
+          } catch (err) { alert('导入失败: ' + err.message); }
         } else if (data.isRoot) {
           const fam = { id: generateId(), name: '导入的家族', root: data, preface: '' };
           addOperation('addFamily', { family: fam });
@@ -1253,31 +1134,15 @@
     if (!confirm('确定删除所有家族及全部成员数据吗？此操作不可恢复，但您可撤销。')) return;
     pendingDeleteAllData = JSON.parse(JSON.stringify(appData));
     const ops = appData.families.map(f => ({ action: 'deleteFamily', payload: { familyId: f.id } }));
-    for (const op of ops) {
-      localApply(op);
-    }
-    appData.currentFamilyId = null;
-    selectedNodeId = null; expandedNodeIds.clear();
-    saveDataToLocal(); renderTree(); refreshDetailView(); updateFamilySelector();
-    refreshEditButtons();
+    for (const op of ops) { localApply(op); }
+    appData.currentFamilyId = null; selectedNodeId = null; expandedNodeIds.clear();
+    saveDataToLocal(); renderTree(); refreshDetailView(); updateFamilySelector(); refreshEditButtons();
     showUndoBarForAllData();
     try {
-      const res = await fetch(CLOUD_API_URL, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ operations: ops })
-      });
-      if (res.ok) {
-        const result = await res.json();
-        baseVersion = result.version;
-        saveDataToLocal();
-      } else {
-        const err = await res.json();
-        showInfoBar('⚠️ 服务器同步失败: ' + (err.error || '未知错误'), 5000);
-      }
-    } catch (e) {
-      showInfoBar('⚠️ 网络错误，数据未同步', 5000);
-    }
+      const res = await fetch(CLOUD_API_URL, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ operations: ops }) });
+      if (res.ok) { const result = await res.json(); baseVersion = result.version; saveDataToLocal(); }
+      else { const err = await res.json(); showInfoBar('⚠️ 服务器同步失败: ' + (err.error || '未知错误'), 5000); }
+    } catch (e) { showInfoBar('⚠️ 网络错误，数据未同步', 5000); }
   }
 
   function showUndoBarForAllData() {
@@ -1314,23 +1179,14 @@
     document.getElementById('detailTitle').innerHTML = node
       ? `🏢 ${escapeHtml(node.name)}${gen > 0 ? `<span style="font-size:10px; color:#444; margin-left:6px;">(第${gen}代)</span>` : ''}`
       : '请选择一个成员';
-
     const detailPathEl = document.getElementById('detailPath');
     if (node && !node.isRoot) {
       const ancestors = [];
       let cur = node;
-      while (cur) {
-        if (!cur.isRoot) ancestors.unshift({ id: cur.id, name: cur.name });
-        cur = findParentNode(getCurrentRoot(), cur.id);
-      }
-      const pathHtml = ancestors.map(a =>
-        `<a href="#" onclick="window.selectNode('${a.id}'); return false;" style="color:#0078d4; text-decoration:none; cursor:pointer;">${escapeHtml(a.name)}</a>`
-      ).join(' <span style="color:#888;">></span> ');
+      while (cur) { if (!cur.isRoot) ancestors.unshift({ id: cur.id, name: cur.name }); cur = findParentNode(getCurrentRoot(), cur.id); }
+      const pathHtml = ancestors.map(a => `<a href="#" onclick="window.selectNode('${a.id}'); return false;" style="color:#0078d4; text-decoration:none; cursor:pointer;">${escapeHtml(a.name)}</a>`).join(' <span style="color:#888;">></span> ');
       detailPathEl.innerHTML = '代际: ' + pathHtml;
-    } else {
-      detailPathEl.textContent = '';
-    }
-
+    } else { detailPathEl.textContent = ''; }
     const orgTree=document.getElementById('orgTree'), empty=document.getElementById('relationEmpty');
     orgTree.innerHTML=''; orgTree.style.display='none'; empty.style.display='flex';
     if(!node || node.isRoot) return;
@@ -1352,13 +1208,7 @@
     }
     if(!treeData) return;
     empty.style.display='none'; orgTree.style.display='inline-flex'; orgTree.style.transform=`scale(${currentScale})`;
-    function createCard(n,self,spouse=false){ 
-      const card=document.createElement('div'); 
-      card.className='org-node'+(spouse?' node-spouse':(self?' node-self':' node-other')); 
-      card.innerHTML=`<span class="node-name">${escapeHtml(n.name)}</span><span class="node-years">${getAttr(n,'出生日期')||''}</span>`; 
-      card.onclick=()=>{ selectNode(n.id); switchTab('relation'); }; 
-      return card; 
-    }
+    function createCard(n,self,spouse=false){ const card=document.createElement('div'); card.className='org-node'+(spouse?' node-spouse':(self?' node-self':' node-other')); card.innerHTML=`<span class="node-name">${escapeHtml(n.name)}</span><span class="node-years">${getAttr(n,'出生日期')||''}</span>`; card.onclick=()=>{ selectNode(n.id); switchTab('relation'); }; return card; }
     function renderNode(tn,container,isSelf){
       if(tn.siblings){ const all=[tn.node,...tn.siblings]; const row=document.createElement('div'); row.className='sibling-row'; all.forEach(s=>{ const sp=getAttr(s,'配偶'); if(sp){ const pair=document.createElement('div'); pair.className='spouse-pair'; pair.appendChild(createCard(s,s.id===maleNode.id)); const sc=document.createElement('div'); sc.className='org-node node-spouse'; sc.innerHTML=`<span class="node-name">${escapeHtml(sp)}</span>`; sc.onclick=()=>{ selectNode(s.id); switchTab('relation'); }; pair.appendChild(sc); row.appendChild(pair); } else row.appendChild(createCard(s,s.id===maleNode.id)); }); container.appendChild(row); return; }
       const branch=document.createElement('div'); branch.className='org-branch';
@@ -1383,38 +1233,9 @@
     if (!container) return;
     let initialDistance = 0;
     let initialScale = 1;
-
-    container.addEventListener('touchstart', (e) => {
-      if (e.touches.length === 2) {
-        e.preventDefault();
-        initialDistance = Math.hypot(
-          e.touches[0].clientX - e.touches[1].clientX,
-          e.touches[0].clientY - e.touches[1].clientY
-        );
-        initialScale = currentScale;
-      }
-    }, { passive: false });
-
-    container.addEventListener('touchmove', (e) => {
-      if (e.touches.length === 2) {
-        e.preventDefault();
-        const newDistance = Math.hypot(
-          e.touches[0].clientX - e.touches[1].clientX,
-          e.touches[0].clientY - e.touches[1].clientY
-        );
-        if (initialDistance > 0) {
-          const newScale = initialScale * (newDistance / initialDistance);
-          currentScale = Math.min(3, Math.max(0.2, newScale));
-          applyScale();
-          updateZoomButtons();
-          autoFitEnabled = false;
-        }
-      }
-    }, { passive: false });
-
-    container.addEventListener('touchend', () => {
-      initialDistance = 0;
-    });
+    container.addEventListener('touchstart', (e) => { if (e.touches.length === 2) { e.preventDefault(); initialDistance = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY); initialScale = currentScale; } }, { passive: false });
+    container.addEventListener('touchmove', (e) => { if (e.touches.length === 2) { e.preventDefault(); const newDistance = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY); if (initialDistance > 0) { const newScale = initialScale * (newDistance / initialDistance); currentScale = Math.min(3, Math.max(0.2, newScale)); applyScale(); updateZoomButtons(); autoFitEnabled = false; } } }, { passive: false });
+    container.addEventListener('touchend', () => { initialDistance = 0; });
   }
 
   function exportChartImage(){
@@ -1447,12 +1268,7 @@
   function searchMember(kw){
     const keys=kw.split(/\s+/).filter(k=>k.length>0); if(!keys.length) return;
     const res=[]; const root=getCurrentRoot(); if(!root) return;
-    function match(n){ 
-      if(n.isRoot) return false; 
-      const attrsValues = (n.attributes || []).filter(a => a.name !== '简介').map(a => a.value || '');
-      const txt=[n.name,...attrsValues].join(' ').toLowerCase(); 
-      return keys.every(k=>txt.includes(k.toLowerCase())); 
-    }
+    function match(n){ if(n.isRoot) return false; const attrsValues = (n.attributes || []).filter(a => a.name !== '简介').map(a => a.value || ''); const txt=[n.name,...attrsValues].join(' ').toLowerCase(); return keys.every(k=>txt.includes(k.toLowerCase())); }
     function walk(n,path){ if(match(n)) res.push({node:n,path}); if(n.children) n.children.forEach(c=>walk(c,[...path,n.name])); }
     walk(root,[]);
     if(!res.length){ alert('未找到'); return; }
@@ -1476,9 +1292,7 @@
       } else {
         document.getElementById('usernameDisplay').textContent = '未登录';
       }
-    } catch(e) {
-      document.getElementById('usernameDisplay').textContent = '获取失败';
-    }
+    } catch(e) { document.getElementById('usernameDisplay').textContent = '获取失败'; }
   }
 
   function changePassword(){
@@ -1492,20 +1306,14 @@
     document.getElementById('cancelChange').onclick=()=>overlay.remove();
     document.getElementById('submitChange').onclick=async ()=>{
       const old=document.getElementById('oldPass').value, p1=document.getElementById('newPass').value, p2=document.getElementById('confirmPass').value;
-      if(!old||!p1||!p2){ alert('所有字段必填'); return; }
-      if(p1!==p2){ alert('两次输入不一致'); return; }
-      if(p1.length<4){ alert('新密码至少4位'); return; }
+      if(!old||!p1||!p2){ alert('所有字段必填'); return; } if(p1!==p2){ alert('两次输入不一致'); return; } if(p1.length<4){ alert('新密码至少4位'); return; }
       try{
         const res=await fetch('/api/auth/change-password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({oldPassword:old,newPassword:p1})});
         const data=await res.json();
         if(res.ok){
-          pendingOperations = [];
-          localStorage.removeItem(STORAGE_KEY);
-          localStorage.removeItem('has_pending_changes');
+          pendingOperations = []; localStorage.removeItem(STORAGE_KEY); localStorage.removeItem('has_pending_changes');
           appData = { families: [], currentFamilyId: null };
-          alert('密码修改成功，请重新登录');
-          overlay.remove();
-          logout();
+          alert('密码修改成功，请重新登录'); overlay.remove(); logout();
         } else alert(data.error||'修改失败');
       }catch{ alert('网络错误'); }
     };
@@ -1513,9 +1321,7 @@
   }
 
   function logout(){
-    pendingOperations = [];
-    localStorage.removeItem(STORAGE_KEY);
-    localStorage.removeItem('has_pending_changes');
+    pendingOperations = []; localStorage.removeItem(STORAGE_KEY); localStorage.removeItem('has_pending_changes');
     appData = { families: [], currentFamilyId: null };
     fetch('/api/auth/logout',{method:'POST'}).then(()=>window.location.href='/login.html').catch(()=>window.location.href='/login.html');
   }
@@ -1526,18 +1332,15 @@
     fetch(CLOUD_API_URL, { method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload), keepalive:true }).catch(()=>{});
   }
 
-  // ========== 帮助窗口 ==========
   function showHelp() {
-    const overlay = document.createElement('div');
-    overlay.className = 'modal-overlay';
+    const overlay = document.createElement('div'); overlay.className = 'modal-overlay';
     const helpContent = `源锦族谱管理系统 - 帮助文档
-源锦族谱管理系统 使用帮助
-一、用户角色与权限
-角色	权限说明
-管理员 (admin)	拥有全部功能：创建/删除/重命名家族，编辑所有成员信息，管理用户，导入导出数据，备份恢复。
-编辑用户 (editor)	用户名需与族谱中某成员姓名一致。可编辑：本人、直系后代、父亲。可为上述成员添加子成员/兄弟。不可对父亲添加兄弟。不能新建/删除家族、编辑序言、导出关系图、使用文件菜单。
-浏览用户 (viewer)	仅查看数据，不能做任何修改。
-二、快速入门
+ 一、用户角色与权限
+    角色\t权限说明
+    管理员 (admin)\t拥有全部功能：创建/删除/重命名家族，编辑所有成员信息，管理用户，导入导出数据，备份恢复。
+    编辑用户 (editor)\t用户名需与族谱中某成员姓名一致。可编辑：本人、直系后代、父亲。可为上述成员添加子成员/兄弟。不可对父亲添加兄弟。不能新建/删除家族、编辑序言、导出关系图、使用文件菜单。
+    浏览用户 (viewer)\t仅查看数据，不能做任何修改。
+ 二、快速入门
 选择家族：使用顶部工具栏的家族下拉菜单切换当前家族。
 
 查看成员：左侧树形列表点击成员，右侧显示详细信息。
@@ -1638,16 +1441,7 @@ Ctrl+Z：撤销最近删除。
 支持多家族管理、角色权限控制、辈分关系图可视化、导入导出（JSON）、图片导出等功能。
 
 开源/许可：保留所有权利，未经授权不得商用。`;
-
-    overlay.innerHTML = `<div class="modal-dialog" style="width:700px; max-width:95vw;">
-      <div class="modal-header">📖 帮助文档</div>
-      <div class="modal-body" style="max-height:70vh; overflow-y:auto;">
-        <pre style="white-space: pre-wrap; font-family: inherit; font-size: 12.5px; color: #333; line-height: 1.6; margin: 0;">${helpContent}</pre>
-      </div>
-      <div class="modal-footer">
-        <button class="btn-cancel" id="helpClose">关闭</button>
-      </div>
-    </div>`;
+    overlay.innerHTML = `<div class="modal-dialog" style="width:700px; max-width:95vw;"><div class="modal-header">📖 帮助文档</div><div class="modal-body" style="max-height:70vh; overflow-y:auto;"><pre style="white-space: pre-wrap; font-family: inherit; font-size: 12.5px; color: #333; line-height: 1.6; margin: 0;">${helpContent}</pre></div><div class="modal-footer"><button class="btn-cancel" id="helpClose">关闭</button></div></div>`;
     document.body.appendChild(overlay);
     overlay.querySelector('#helpClose').onclick = () => overlay.remove();
     overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
@@ -1659,42 +1453,22 @@ Ctrl+Z：撤销最近删除。
       if (!res.ok) { alert('获取备份列表失败'); return; }
       const data = await res.json();
       const backups = data.backups || [];
-
-      const overlay = document.createElement('div');
-      overlay.className = 'modal-overlay';
-      let listHtml = backups.length === 0
-        ? '<div style="padding:20px;text-align:center;color:#888;">暂无备份</div>'
-        : backups.map(b => `<div style="display:flex;justify-content:space-between;padding:8px;border-bottom:1px solid #eee;">
-            <span>${new Date(b.timestamp).toLocaleString()}</span>
-            <button data-key="${b.key}" class="restoreBtn btn-primary" style="padding:4px 12px;">恢复此版本</button>
-          </div>`).join('');
-
+      const overlay = document.createElement('div'); overlay.className = 'modal-overlay';
+      let listHtml = backups.length === 0 ? '<div style="padding:20px;text-align:center;color:#888;">暂无备份</div>' : backups.map(b => `<div style="display:flex;justify-content:space-between;padding:8px;border-bottom:1px solid #eee;"><span>${new Date(b.timestamp).toLocaleString()}</span><button data-key="${b.key}" class="restoreBtn btn-primary" style="padding:4px 12px;">恢复此版本</button></div>`).join('');
       overlay.innerHTML = `<div class="modal-dialog"><div class="modal-header">备份管理（自动每5分钟备份）</div><div class="modal-body">${listHtml}</div><div class="modal-footer"><button class="btn-cancel" id="closeBackup">关闭</button></div></div>`;
       document.body.appendChild(overlay);
-
       overlay.querySelector('#closeBackup').onclick = () => overlay.remove();
       overlay.querySelectorAll('.restoreBtn').forEach(btn => {
         btn.onclick = async () => {
           if (!confirm('确定要恢复到该备份吗？当前数据将被覆盖。')) return;
           const backupKey = btn.dataset.key;
-          const res = await fetch('/api/data?action=restore', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ backupKey })
-          });
-          if (res.ok) {
-            alert('恢复成功！页面将刷新。');
-            location.reload();
-          } else {
-            const err = await res.json();
-            alert('恢复失败：' + (err.error || '未知错误'));
-          }
+          const res = await fetch('/api/data?action=restore', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ backupKey }) });
+          if (res.ok) { alert('恢复成功！页面将刷新。'); location.reload(); }
+          else { const err = await res.json(); alert('恢复失败：' + (err.error || '未知错误')); }
         };
       });
       overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
-    } catch (e) {
-      alert('请求失败：' + e.message);
-    }
+    } catch (e) { alert('请求失败：' + e.message); }
   }
 
   async function openAdminDialog() {
@@ -1703,66 +1477,29 @@ Ctrl+Z：撤销最近删除。
       if (!res.ok) { alert('获取用户列表失败'); return; }
       const data = await res.json();
       const users = data.users || [];
-
-      const overlay = document.createElement('div');
-      overlay.className = 'modal-overlay';
-      let listHtml = users.length === 0
-        ? '<div style="padding:20px;text-align:center;">暂无其他用户</div>'
-        : users.map(u => `<div style="display:flex;justify-content:space-between;padding:8px;border-bottom:1px solid #eee;">
-            <span>${escapeHtml(u.username)} (${u.role === 'editor' ? '编辑用户' : '浏览用户'})</span>
-            <div>
-              <button class="resetPwdBtn btn-primary" data-username="${escapeHtml(u.username)}" style="padding:4px 12px;margin-right:4px;">重置密码</button>
-              <button class="deleteUserBtn btn-primary" data-username="${escapeHtml(u.username)}" style="padding:4px 12px;background:#c42b1c;border-color:#a0301c;">删除</button>
-            </div>
-          </div>`).join('');
-
+      const overlay = document.createElement('div'); overlay.className = 'modal-overlay';
+      let listHtml = users.length === 0 ? '<div style="padding:20px;text-align:center;">暂无其他用户</div>' : users.map(u => `<div style="display:flex;justify-content:space-between;padding:8px;border-bottom:1px solid #eee;"><span>${escapeHtml(u.username)} (${u.role === 'editor' ? '编辑用户' : '浏览用户'})</span><div><button class="resetPwdBtn btn-primary" data-username="${escapeHtml(u.username)}" style="padding:4px 12px;margin-right:4px;">重置密码</button><button class="deleteUserBtn btn-primary" data-username="${escapeHtml(u.username)}" style="padding:4px 12px;background:#c42b1c;border-color:#a0301c;">删除</button></div></div>`).join('');
       overlay.innerHTML = `<div class="modal-dialog"><div class="modal-header">用户管理</div><div class="modal-body">${listHtml}</div><div class="modal-footer"><button class="btn-cancel" id="closeAdmin">关闭</button></div></div>`;
       document.body.appendChild(overlay);
-
       overlay.querySelector('#closeAdmin').onclick = () => overlay.remove();
-
       overlay.querySelectorAll('.resetPwdBtn').forEach(btn => {
         btn.onclick = async () => {
           if (!confirm(`确定要将用户 ${btn.dataset.username} 的密码重置为 123456 吗？`)) return;
-          const res = await fetch('/api/admin/reset-password', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username: btn.dataset.username })
-          });
-          if (res.ok) {
-            alert('密码已重置');
-            overlay.remove();
-            openAdminDialog();
-          } else {
-            const err = await res.json();
-            alert(err.error || '操作失败');
-          }
+          const res = await fetch('/api/admin/reset-password', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: btn.dataset.username }) });
+          if (res.ok) { alert('密码已重置'); overlay.remove(); openAdminDialog(); }
+          else { const err = await res.json(); alert(err.error || '操作失败'); }
         };
       });
-
       overlay.querySelectorAll('.deleteUserBtn').forEach(btn => {
         btn.onclick = async () => {
           if (!confirm(`确定要删除用户 ${btn.dataset.username} 吗？此操作不可恢复！`)) return;
-          const res = await fetch('/api/admin/delete-user', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username: btn.dataset.username })
-          });
-          if (res.ok) {
-            alert('用户已删除');
-            overlay.remove();
-            openAdminDialog();
-          } else {
-            const err = await res.json();
-            alert(err.error || '删除失败');
-          }
+          const res = await fetch('/api/admin/delete-user', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: btn.dataset.username }) });
+          if (res.ok) { alert('用户已删除'); overlay.remove(); openAdminDialog(); }
+          else { const err = await res.json(); alert(err.error || '删除失败'); }
         };
       });
-
       overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
-    } catch (e) {
-      alert('请求失败：' + e.message);
-    }
+    } catch (e) { alert('请求失败：' + e.message); }
   }
 
   function updateStatusBar(){
@@ -1776,16 +1513,10 @@ Ctrl+Z：撤销最近删除。
           if(!cur.isRoot) ancestors.unshift({id: cur.id, name: cur.name});
           cur = findParentNode(root, cur.id);
         }
-        const pathHtml = ancestors.map(a =>
-          `<a href="#" onclick="window.selectNode('${a.id}'); return false;" style="color:#0078d4; text-decoration:none; cursor:pointer;">${escapeHtml(a.name)}</a>`
-        ).join(' <span style="color:#888;">></span> ');
+        const pathHtml = ancestors.map(a => `<a href="#" onclick="window.selectNode('${a.id}'); return false;" style="color:#0078d4; text-decoration:none; cursor:pointer;">${escapeHtml(a.name)}</a>`).join(' <span style="color:#888;">></span> ');
         document.getElementById('statusPath').innerHTML = pathHtml;
-      } else {
-        document.getElementById('statusPath').textContent = fam ? fam.name : '族谱管理系统';
-      }
-    } else {
-      document.getElementById('statusPath').textContent = fam ? fam.name : '族谱管理系统';
-    }
+      } else { document.getElementById('statusPath').textContent = fam ? fam.name : '族谱管理系统'; }
+    } else { document.getElementById('statusPath').textContent = fam ? fam.name : '族谱管理系统'; }
     const memberCount = root ? countMembers(root) : 0;
     const genCount = root ? getMaxGeneration(root) : 0;
     document.getElementById('statusCount').textContent = `共 ${memberCount} 位成员，${genCount} 代`;
@@ -1793,95 +1524,40 @@ Ctrl+Z：撤销最近删除。
 
   function setupSash() {
     if (document.body.classList.contains('mobile-layout')) return;
-
     const sash = document.getElementById('sash');
     const mainBody = document.getElementById('mainBody');
     const treePanel = document.getElementById('treePanel');
-
-    let startX = 0;
-    let startWidth = 0;
-    let dragging = false;
-
-    function onMouseMove(e) {
-      if (!dragging) return;
-      e.preventDefault();
-      const dx = e.clientX - startX;
-      let newWidth = startWidth + dx;
-      newWidth = Math.max(180, newWidth);
-      treePanel.style.width = newWidth + 'px';
-      sash.classList.add('active');
-    }
-
-    function onMouseUp() {
-      if (!dragging) return;
-      dragging = false;
-      sash.classList.remove('active');
-      document.removeEventListener('mousemove', onMouseMove);
-      document.removeEventListener('mouseup', onMouseUp);
-      document.body.style.cursor = '';
-    }
-
-    sash.addEventListener('mousedown', function(e) {
-      e.preventDefault();
-      dragging = true;
-      startX = e.clientX;
-      startWidth = treePanel.getBoundingClientRect().width;
-      document.addEventListener('mousemove', onMouseMove);
-      document.addEventListener('mouseup', onMouseUp);
-      document.body.style.cursor = 'col-resize';
-    });
+    let startX = 0; let startWidth = 0; let dragging = false;
+    function onMouseMove(e) { if (!dragging) return; e.preventDefault(); const dx = e.clientX - startX; let newWidth = startWidth + dx; newWidth = Math.max(180, newWidth); treePanel.style.width = newWidth + 'px'; sash.classList.add('active'); }
+    function onMouseUp() { if (!dragging) return; dragging = false; sash.classList.remove('active'); document.removeEventListener('mousemove', onMouseMove); document.removeEventListener('mouseup', onMouseUp); document.body.style.cursor = ''; }
+    sash.addEventListener('mousedown', function(e) { e.preventDefault(); dragging = true; startX = e.clientX; startWidth = treePanel.getBoundingClientRect().width; document.addEventListener('mousemove', onMouseMove); document.addEventListener('mouseup', onMouseUp); document.body.style.cursor = 'col-resize'; });
   }
 
   function applyRolePermissions() {
     const isAdmin = (currentUserRole === 'admin');
-    const menuFile = document.getElementById('menuFile');
-    if (menuFile) menuFile.style.display = isAdmin ? '' : 'none';
-    const menuBackup = document.getElementById('menuBackup');
-    if (menuBackup) menuBackup.style.display = isAdmin ? '' : 'none';
-    const menuAdmin = document.getElementById('menuAdmin');
-    if (menuAdmin) menuAdmin.style.display = isAdmin ? '' : 'none';
-    const btnExportChart = document.getElementById('btnExportChart');
-    if (btnExportChart) btnExportChart.style.display = isAdmin ? '' : 'none';
+    const menuFile = document.getElementById('menuFile'); if (menuFile) menuFile.style.display = isAdmin ? '' : 'none';
+    const menuBackup = document.getElementById('menuBackup'); if (menuBackup) menuBackup.style.display = isAdmin ? '' : 'none';
+    const menuAdmin = document.getElementById('menuAdmin'); if (menuAdmin) menuAdmin.style.display = isAdmin ? '' : 'none';
+    const btnExportChart = document.getElementById('btnExportChart'); if (btnExportChart) btnExportChart.style.display = isAdmin ? '' : 'none';
     refreshEditButtons();
   }
 
-  function isFatherOfCurrentUser(node) {
-    if (currentUserRole !== 'editor') return false;
-    const username = document.getElementById('usernameDisplay').textContent.split(' ')[0];
-    if (!node || !node.children) return false;
-    return node.children.some(child => child.name === username);
-  }
+  function isFatherOfCurrentUser(node) { if (currentUserRole !== 'editor') return false; const username = document.getElementById('usernameDisplay').textContent.split(' ')[0]; if (!node || !node.children) return false; return node.children.some(child => child.name === username); }
 
   function canEditNode(node) {
-    if (!node) return false;
-    if (currentUserRole === 'admin' && node.isRoot) return true;
-    if (node.isRoot) return false;
-    if (currentUserRole === 'admin') return true;
-    if (currentUserRole === 'viewer') return false;
+    if (!node) return false; if (currentUserRole === 'admin' && node.isRoot) return true; if (node.isRoot) return false;
+    if (currentUserRole === 'admin') return true; if (currentUserRole === 'viewer') return false;
     if (currentUserRole === 'editor') {
       const username = document.getElementById('usernameDisplay').textContent.split(' ')[0];
-      if (node.name === username) return true;
-      if (isFatherOfCurrentUser(node)) return true;
-      const root = getCurrentRoot();
-      let cur = node;
-      while (cur) {
-        const p = findParentNode(root, cur.id);
-        if (!p || p.isRoot) break;
-        if (p.name === username) return true;
-        cur = p;
-      }
+      if (node.name === username) return true; if (isFatherOfCurrentUser(node)) return true;
+      const root = getCurrentRoot(); let cur = node;
+      while (cur) { const p = findParentNode(root, cur.id); if (!p || p.isRoot) break; if (p.name === username) return true; cur = p; }
       return false;
     }
     return false;
   }
 
-  function canAddSibling(node) {
-    if (!node || node.isRoot) return false;
-    if (currentUserRole === 'admin') return true;
-    if (currentUserRole === 'viewer') return false;
-    if (isFatherOfCurrentUser(node)) return false;
-    return canEditNode(node);
-  }
+  function canAddSibling(node) { if (!node || node.isRoot) return false; if (currentUserRole === 'admin') return true; if (currentUserRole === 'viewer') return false; if (isFatherOfCurrentUser(node)) return false; return canEditNode(node); }
 
   function refreshEditButtons() {
     const isAdmin = (currentUserRole === 'admin');
@@ -1889,21 +1565,10 @@ Ctrl+Z：撤销最近删除。
     const node = selectedNodeId ? findNodeById(getCurrentRoot(), selectedNodeId) : null;
     const canEdit = node ? canEditNode(node) : false;
     const canSibling = node ? canAddSibling(node) : false;
-
     const editButtons = document.querySelectorAll('.edit-btn');
-    if (isAdmin) {
-      editButtons.forEach(b => b.disabled = false);
-    } else if (isEditor) {
-      editButtons.forEach(b => {
-        if (b.id === 'btnAddSibling') {
-          b.disabled = !canSibling;
-        } else {
-          b.disabled = !canEdit;
-        }
-      });
-    } else {
-      editButtons.forEach(b => b.disabled = true);
-    }
+    if (isAdmin) { editButtons.forEach(b => b.disabled = false); }
+    else if (isEditor) { editButtons.forEach(b => { if (b.id === 'btnAddSibling') b.disabled = !canSibling; else b.disabled = !canEdit; }); }
+    else { editButtons.forEach(b => b.disabled = true); }
   }
 
   document.addEventListener('keydown',function(e){
@@ -1911,25 +1576,13 @@ Ctrl+Z：撤销最近删除。
     if(e.key==='Delete'){ e.preventDefault(); if(selectedNodeId) deleteSelectedMember(); }
     else if(e.ctrlKey && e.key==='z'){
       e.preventDefault();
-      const undoBtn=document.getElementById('undoDeleteBtn');
-      if(undoBtn) undoBtn.click();
+      const undoBtn=document.getElementById('undoDeleteBtn'); if(undoBtn) undoBtn.click();
       else{ const undoAll=document.getElementById('undoDeleteAllBtn'); if(undoAll) undoAll.click(); }
     }
   });
 
-  document.addEventListener('focusin', (e) => {
-    if (e.target.matches('input, textarea, select')) {
-      isUserEditing = true;
-    }
-  });
-  document.addEventListener('focusout', () => {
-    setTimeout(() => {
-      if (!document.activeElement || !document.activeElement.matches('input, textarea, select')) {
-        isUserEditing = false;
-        scheduleSync();
-      }
-    }, 200);
-  });
+  document.addEventListener('focusin', (e) => { if (e.target.matches('input, textarea, select')) isUserEditing = true; });
+  document.addEventListener('focusout', () => { setTimeout(() => { if (!document.activeElement || !document.activeElement.matches('input, textarea, select')) { isUserEditing = false; scheduleSync(); } }, 200); });
 
   async function loadFromCloud() {
     if (!confirm('从云端加载将覆盖当前所有数据，确定继续吗？')) return;
@@ -1938,28 +1591,16 @@ Ctrl+Z：撤销最近删除。
       const res = await fetch(CLOUD_API_URL);
       if (!res.ok) { const err = await res.json(); showInfoBar(`❌ 加载失败: ${err.error}`, 3000); return; }
       const cloudData = await res.json();
-      if (cloudData.families && Array.isArray(cloudData.families)) {
-        await loadRemoteData(cloudData, cloudData._version || 0);
-        showInfoBar('✅ 云端数据加载成功', 3000);
-      } else { showInfoBar('❌ 云端数据格式错误', 3000); }
+      if (cloudData.families && Array.isArray(cloudData.families)) { await loadRemoteData(cloudData, cloudData._version || 0); showInfoBar('✅ 云端数据加载成功', 3000); }
+      else { showInfoBar('❌ 云端数据格式错误', 3000); }
     } catch (e) { showInfoBar(`❌ 网络错误: ${e.message}`, 3000); }
   }
 
   async function init(){
-    await loadUserInfo();
-    applyRolePermissions();
-
+    await loadUserInfo(); applyRolePermissions();
     loadData();
-    initialSyncFromCloud().then(() => {
-      const root = getCurrentRoot();
-      if (root) expandedNodeIds.add(root.id);
-      renderTree();
-      updateStatusBar();
-      updateFamilySelector();
-    });
-
-    setupPinchZoom();
-    setupSash();
+    initialSyncFromCloud().then(() => { const root = getCurrentRoot(); if (root) expandedNodeIds.add(root.id); renderTree(); updateStatusBar(); updateFamilySelector(); });
+    setupPinchZoom(); setupSash();
     window.addEventListener('beforeunload', uploadOnClose);
     document.querySelectorAll('.menu-item[data-menu]').forEach(item=>{
       const dd=item.querySelector('.dropdown-menu');
@@ -1973,11 +1614,8 @@ Ctrl+Z：撤销最近删除。
     window.setViewMode=setViewMode; window.zoomIn=zoomIn; window.zoomOut=zoomOut; window.zoomToFit=zoomToFit; window.zoomReset=zoomReset;
     window.exportChartImage=exportChartImage; window.openSortDialog=openSortDialog; window.openSearchDialog=openSearchDialog;
     window.openFamilyManageDialog=openFamilyManageDialog; window.openPrefaceDialog=openPrefaceDialog;
-    window.changePassword=changePassword; window.logout=logout;
-    window.deleteAllData=deleteAllData;
-    window.syncNow = syncNow;
-    window.openBackupDialog = openBackupDialog;
-    window.openAdminDialog = openAdminDialog;
+    window.changePassword=changePassword; window.logout=logout; window.deleteAllData=deleteAllData;
+    window.syncNow = syncNow; window.openBackupDialog = openBackupDialog; window.openAdminDialog = openAdminDialog;
   }
   init();
   window.addChildMember=addChildMember; window.addSiblingMember=addSiblingMember;
@@ -1988,8 +1626,7 @@ Ctrl+Z：撤销最近删除。
   window.switchFamily=switchFamily;
   window.syncToCloud=syncNow; window.loadFromCloud=loadFromCloud;
   window.selectNode = selectNode;
-  window.openBackupDialog = openBackupDialog;
-  window.openAdminDialog = openAdminDialog;
+  window.openBackupDialog = openBackupDialog; window.openAdminDialog = openAdminDialog;
 })();
 </script>
 </body>
