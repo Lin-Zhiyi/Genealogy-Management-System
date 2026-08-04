@@ -416,6 +416,7 @@
 
   if (/Mobi|Android/i.test(navigator.userAgent)) document.body.classList.add('mobile-layout');
 
+  // --- 工具函数 ---
   function isNetworkError(err) {
     return err instanceof TypeError && (err.message === 'Failed to fetch' || err.message === 'NetworkError when attempting to fetch resource.');
   }
@@ -527,6 +528,7 @@
     syncTimer = setTimeout(() => syncNow(), 1500);
   }
 
+  // --- 同步与冲突处理（优化）---
   async function syncNow() {
     if (pendingOperations.length === 0) return;
     const ops = [...pendingOperations];
@@ -545,7 +547,13 @@
         return;
       }
       if (res.status === 409) {
-        showInfoBar('⚠️ 版本冲突，本地修改已保留，可稍后重试同步', 5000);
+        // 版本冲突：提示用户，保留本地修改
+        showInfoBar('⚠️ 数据版本冲突，您的修改未同步到云端，但已保存在本地。请稍后重试或刷新页面。', 6000);
+        return;
+      }
+      if (res.status === 401) {
+        showInfoBar('❌ 登录已过期，即将跳转到登录页', 3000);
+        setTimeout(() => window.location.href = '/login.html', 1500);
         return;
       }
       const text = await res.text();
@@ -609,6 +617,7 @@
     } catch (e) {}
   }
 
+  // --- 导入（离线/在线自动切换）---
   async function handleFileImport(e) {
     const f = e.target.files[0]; if (!f) return;
     const reader = new FileReader();
@@ -1050,6 +1059,7 @@
   function exportData() { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(appData, null, 2)])); a.download = '源锦族谱管理备份.json'; a.click(); }
   function importData() { document.getElementById('fileInput').click(); }
 
+  // --- 辈分关系图 ---
   function renderOrgChart(node) {
     const gen = (node && !node.isRoot) ? getNodePath(node).length : 0;
     document.getElementById('detailTitle').innerHTML = node
