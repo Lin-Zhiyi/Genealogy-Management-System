@@ -413,9 +413,39 @@
   let syncTimer = null;
   let isUserEditing = false;
   let currentUserRole = 'viewer';
-  let conflictCloudData = null;
 
   if (/Mobi|Android/i.test(navigator.userAgent)) document.body.classList.add('mobile-layout');
+
+  // 网络错误判断
+  function isNetworkError(err) {
+    return err instanceof TypeError && (err.message === 'Failed to fetch' || err.message === 'NetworkError when attempting to fetch resource.');
+  }
+
+  // 认证检查，离线可用
+  async function checkAuth() {
+    try {
+      const res = await fetch('/api/auth/me');
+      if (!res.ok) {
+        window.location.href = '/login.html';
+        return false;
+      }
+      const u = await res.json();
+      currentUserRole = u.role || 'viewer';
+      const roleText = currentUserRole === 'admin' ? '管理员' : (currentUserRole === 'editor' ? '编辑用户' : '浏览用户');
+      document.getElementById('usernameDisplay').textContent = `${u.username} (${roleText})`;
+      applyRolePermissions();
+      return true;
+    } catch (e) {
+      if (isNetworkError(e)) {
+        currentUserRole = 'viewer';
+        document.getElementById('usernameDisplay').textContent = '离线模式';
+        applyRolePermissions();
+        return true;
+      }
+      window.location.href = '/login.html';
+      return false;
+    }
+  }
 
   function generateId() { return 'n' + Date.now() + Math.random().toString(36).substr(2, 8); }
   function getCurrentFamily() {
@@ -451,10 +481,7 @@
     if (!node) return 0;
     if (!node.children || node.children.length === 0) return 0;
     let max = 0;
-    for (const child of node.children) {
-      const depth = getMaxGeneration(child);
-      if (depth > max) max = depth;
-    }
+    for (const child of node.children) { const depth = getMaxGeneration(child); if (depth > max) max = depth; }
     return max + 1;
   }
 
@@ -463,74 +490,21 @@
     if (!root && !['addFamily','deleteFamily','renameFamily','setFamilyPreface'].includes(op.action)) return false;
     const { action, payload } = op;
     switch (action) {
-      case 'addChild': {
-        if (!root) return false;
-        const parent = findNodeById(root, payload.parentId);
-        if (parent) { if (!parent.children) parent.children = []; parent.children.push(payload.node); return true; }
-        return false;
-      }
-      case 'deleteMember': {
-        if (!root) return false;
-        const parent = findParentNode(root, payload.memberId);
-        if (parent) { const idx = parent.children.findIndex(c => c.id === payload.memberId); if (idx !== -1) { parent.children.splice(idx, 1); return true; } }
-        return false;
-      }
-      case 'setAttr': {
-        if (!root) return false;
-        const node = findNodeById(root, payload.memberId);
-        if (node) { if (!node.attributes) node.attributes = []; const a = node.attributes.find(a => a.name === payload.attrName); if (a) a.value = payload.value; else node.attributes.push({ name: payload.attrName, value: payload.value }); return true; }
-        return false;
-      }
-      case 'setName': {
-        if (!root) return false;
-        const node = findNodeById(root, payload.memberId);
-        if (node) { node.name = payload.newName; return true; }
-        return false;
-      }
-      case 'deleteAttr': {
-        if (!root) return false;
-        const node = findNodeById(root, payload.memberId);
-        if (node && node.attributes) { node.attributes = node.attributes.filter(a => a.name !== payload.attrName); return true; }
-        return false;
-      }
-      case 'addFamily': { 
-        appData.families.push(payload.family); 
-        if (!appData.currentFamilyId) appData.currentFamilyId = payload.family.id;
-        return true; 
-      }
-      case 'deleteFamily': { 
-        appData.families = appData.families.filter(f => f.id !== payload.familyId); 
-        if (appData.currentFamilyId === payload.familyId) appData.currentFamilyId = appData.families.length ? appData.families[0].id : null;
-        return true; 
-      }
-      case 'renameFamily': {
-        const f = appData.families.find(f => f.id === payload.familyId);
-        if (f) { f.name = payload.newName; if (f.root) f.root.name = payload.newName; return true; }
-        return false;
-      }
-      case 'setFamilyPreface': { 
-        const f = appData.families.find(f => f.id === payload.familyId); 
-        if (f) { f.preface = payload.preface; return true; } 
-        return false; 
-      }
-      case 'reorderChildren': {
-        if (!root) return false;
-        const parent = findNodeById(root, payload.parentId);
-        if (parent && parent.children) {
-          const reordered = []; for (const id of payload.newOrder) { const child = parent.children.find(c => c.id === id); if (child) reordered.push(child); }
-          parent.children = reordered;
-          return true;
-        }
-        return false;
-      }
+      case 'addChild': { if (!root) return false; const parent = findNodeById(root, payload.parentId); if (parent) { if (!parent.children) parent.children = []; parent.children.push(payload.node); return true; } return false; }
+      case 'deleteMember': { if (!root) return false; const parent = findParentNode(root, payload.memberId); if (parent) { const idx = parent.children.findIndex(c => c.id === payload.memberId); if (idx !== -1) { parent.children.splice(idx, 1); return true; } } return false; }
+      case 'setAttr': { if (!root) return false; const node = findNodeById(root, payload.memberId); if (node) { if (!node.attributes) node.attributes = []; const a = node.attributes.find(a => a.name === payload.attrName); if (a) a.value = payload.value; else node.attributes.push({ name: payload.attrName, value: payload.value }); return true; } return false; }
+      case 'setName': { if (!root) return false; const node = findNodeById(root, payload.memberId); if (node) { node.name = payload.newName; return true; } return false; }
+      case 'deleteAttr': { if (!root) return false; const node = findNodeById(root, payload.memberId); if (node && node.attributes) { node.attributes = node.attributes.filter(a => a.name !== payload.attrName); return true; } return false; }
+      case 'addFamily': { appData.families.push(payload.family); if (!appData.currentFamilyId) appData.currentFamilyId = payload.family.id; return true; }
+      case 'deleteFamily': { appData.families = appData.families.filter(f => f.id !== payload.familyId); if (appData.currentFamilyId === payload.familyId) appData.currentFamilyId = appData.families.length ? appData.families[0].id : null; return true; }
+      case 'renameFamily': { const f = appData.families.find(f => f.id === payload.familyId); if (f) { f.name = payload.newName; if (f.root) f.root.name = payload.newName; return true; } return false; }
+      case 'setFamilyPreface': { const f = appData.families.find(f => f.id === payload.familyId); if (f) { f.preface = payload.preface; return true; } return false; }
+      case 'reorderChildren': { if (!root) return false; const parent = findNodeById(root, payload.parentId); if (parent && parent.children) { const reordered = []; for (const id of payload.newOrder) { const child = parent.children.find(c => c.id === id); if (child) reordered.push(child); } parent.children = reordered; return true; } return false; }
     }
     return false;
   }
 
-  function saveDataToLocal() {
-    appData._version = baseVersion;
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(appData));
-  }
+  function saveDataToLocal() { appData._version = baseVersion; localStorage.setItem(STORAGE_KEY, JSON.stringify(appData)); }
 
   function addOperation(action, payload) {
     const requiresRoot = ['addChild','deleteMember','setAttr','setName','deleteAttr','reorderChildren'];
@@ -539,17 +513,10 @@
       if (!payload.familyId) payload.familyId = appData.currentFamilyId;
     }
     const op = { action, payload };
-    if (!localApply(op)) {
-      if (requiresRoot.includes(action)) { alert('操作失败，请刷新页面后重试'); }
-      return false;
-    }
+    if (!localApply(op)) { if (requiresRoot.includes(action)) { alert('操作失败，请刷新页面后重试'); } return false; }
     pendingOperations.push(op);
-    renderTree();
-    refreshDetailView();
-    updateFamilySelector();
-    updateStatusBar();
-    saveDataToLocal();
-    scheduleSync();
+    renderTree(); refreshDetailView(); updateFamilySelector(); updateStatusBar();
+    saveDataToLocal(); scheduleSync();
     localStorage.setItem('has_pending_changes', '1');
     refreshEditButtons();
     return true;
@@ -564,98 +531,28 @@
   async function syncNow() {
     if (pendingOperations.length === 0) return;
     const ops = [...pendingOperations];
-    let success = false;
-    let retries = 3;
-    while (retries-- > 0 && !success) {
-      try {
-        const res = await fetch(CLOUD_API_URL, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ operations: ops, baseVersion })
-        });
-        if (res.ok) {
-          const result = await res.json();
-          baseVersion = result.version;
-          pendingOperations = pendingOperations.filter(op => !ops.includes(op));
-          if (pendingOperations.length === 0) localStorage.removeItem('has_pending_changes');
-          saveDataToLocal();
-          success = true;
-        } else if (res.status === 409) {
-          let cloudDataFromConflict = null;
-          try {
-            const conflictBody = await res.json();
-            if (conflictBody.latestData && conflictBody.latestData.families) {
-              cloudDataFromConflict = conflictBody.latestData;
-              cloudDataFromConflict._version = conflictBody.latestVersion;
-            }
-          } catch (parseErr) {}
-          if (cloudDataFromConflict) {
-            conflictCloudData = cloudDataFromConflict;
-            showConflictBar();
-          } else {
-            try {
-              const cloudRes = await fetch(CLOUD_API_URL);
-              if (cloudRes.ok) {
-                conflictCloudData = await cloudRes.json();
-                if (conflictCloudData && conflictCloudData.families) {
-                  showConflictBar();
-                } else {
-                  conflictCloudData = null;
-                  showInfoBar('⚠️ 云端数据无效，无法加载', 5000);
-                }
-              } else if (cloudRes.status === 401) {
-                showInfoBar('❌ 登录已过期，请重新登录', 5000);
-              } else {
-                const text = await cloudRes.text();
-                if (text.startsWith('<!DOCTYPE') || text.startsWith('<html')) {
-                  showInfoBar('❌ 会话已过期，请刷新页面重新登录', 5000);
-                } else {
-                  showInfoBar(`❌ 无法获取云端版本 (${cloudRes.status})`, 5000);
-                }
-              }
-            } catch (err) {
-              showInfoBar(`❌ 获取云端数据时发生网络错误: ${err.message}`, 5000);
-            }
-          }
-          break;
-        } else if (res.status === 401) {
-          showInfoBar('❌ 登录已过期，请重新登录', 5000);
-          break;
-        } else {
-          const err = await res.json();
-          throw new Error(err.error || `HTTP ${res.status}`);
-        }
-      } catch (e) {
-        if (retries <= 0) showInfoBar(`❌ 同步失败: ${e.message}`, 5000);
-        else await new Promise(r => setTimeout(r, 500));
+    try {
+      const res = await fetch(CLOUD_API_URL, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ operations: ops, baseVersion })
+      });
+      if (res.ok) {
+        const result = await res.json();
+        baseVersion = result.version;
+        pendingOperations = pendingOperations.filter(op => !ops.includes(op));
+        if (pendingOperations.length === 0) localStorage.removeItem('has_pending_changes');
+        saveDataToLocal();
+        return;
       }
+      if (res.status === 409) {
+        showInfoBar('⚠️ 数据版本冲突，您的修改未同步到云端，但已保存在本地', 5000);
+        return;
+      }
+      showInfoBar('⚠️ 云端同步失败，数据已保存在本地', 5000);
+    } catch (e) {
+      showInfoBar(isNetworkError(e) ? '⚠️ 无法连接云端，数据已保存在本地' : `同步失败: ${e.message}`, 5000);
     }
-  }
-
-  function showConflictBar() {
-    const existing = document.querySelector('.conflict-bar');
-    if (existing) existing.remove();
-    const bar = document.createElement('div');
-    bar.className = 'conflict-bar';
-    bar.innerHTML = `
-      ⚠️ 数据版本冲突：您的本地修改尚未同步到云端。
-      <button id="conflictRetry" style="margin-left:auto;">重试同步</button>
-      <button id="conflictUseCloud" class="danger-btn">放弃本地修改，加载云端</button>
-      <button id="conflictDismiss" class="cancel-btn">忽略</button>
-    `;
-    document.getElementById('appWindow').prepend(bar);
-    document.getElementById('conflictRetry').onclick = () => { bar.remove(); syncNow(); };
-    document.getElementById('conflictUseCloud').onclick = () => {
-      bar.remove();
-      if (conflictCloudData && conflictCloudData.families) {
-        loadRemoteData(conflictCloudData, conflictCloudData._version || 0);
-        conflictCloudData = null;
-        showInfoBar('✅ 已加载云端最新数据，本地修改已丢弃', 3000);
-      } else {
-        showInfoBar('❌ 无法加载云端数据，数据无效', 3000);
-      }
-    };
-    document.getElementById('conflictDismiss').onclick = () => { bar.remove(); };
   }
 
   function loadData() {
@@ -666,15 +563,10 @@
         baseVersion = appData._version || 0;
         if (!appData.families || !Array.isArray(appData.families)) throw new Error();
         appData.families.forEach(f => { if (f.preface === undefined) f.preface = ''; });
-        if (appData.families.length === 0) {
-          appData.currentFamilyId = null;
-        } else if (!appData.currentFamilyId || !appData.families.find(f=>f.id===appData.currentFamilyId)) {
-          appData.currentFamilyId = appData.families[0].id;
-        }
+        if (appData.families.length === 0) { appData.currentFamilyId = null; }
+        else if (!appData.currentFamilyId || !appData.families.find(f=>f.id===appData.currentFamilyId)) { appData.currentFamilyId = appData.families[0].id; }
       } catch (e) { appData = { families: [], currentFamilyId: null }; }
-    } else {
-      appData = { families: [], currentFamilyId: null };
-    }
+    } else { appData = { families: [], currentFamilyId: null }; }
     saveDataToLocal();
     updateFamilySelector();
   }
@@ -693,9 +585,7 @@
       appData.currentFamilyId = savedFamilyId;
     } else if (appData.families.length > 0) {
       appData.currentFamilyId = appData.families[0].id;
-    } else {
-      appData.currentFamilyId = null;
-    }
+    } else { appData.currentFamilyId = null; }
     const root = getCurrentRoot(); if (root) expandedNodeIds.add(root.id);
     saveDataToLocal();
     renderTree(); refreshDetailView(); updateFamilySelector();
@@ -708,23 +598,48 @@
       if (res.ok) {
         const cloudData = await res.json();
         if (cloudData.families && Array.isArray(cloudData.families)) {
-          if (localStorage.getItem('has_pending_changes') === '1') {
-            showInfoBar('📡 正在同步本地修改...', 0);
-            await syncNow();
-            if (localStorage.getItem('has_pending_changes') === '1') {
-              showInfoBar('⚠️ 同步失败，保留本地数据，云端数据未加载', 4000);
-              return;
-            }
-          }
+          if (localStorage.getItem('has_pending_changes') === '1') await syncNow();
           await loadRemoteData(cloudData, cloudData._version || 0);
         }
-      } else {
-        const text = await res.text();
-        if (text.startsWith('<!DOCTYPE') || text.startsWith('<html')) {
-          showInfoBar('❌ 登录已过期，请重新登录', 5000);
-        }
       }
-    } catch (e) { /* 离线 */ }
+    } catch (e) {}
+  }
+
+  async function handleFileImport(e) {
+    const f = e.target.files[0]; if (!f) return;
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      try {
+        const data = JSON.parse(ev.target.result);
+        if (data.families && Array.isArray(data.families)) {
+          try {
+            data._forceOverwrite = true;
+            const res = await fetch(CLOUD_API_URL, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+            if (res.ok) {
+              const result = await res.json();
+              baseVersion = result.version;
+              data._version = result.version;
+            } else throw new Error('云端不可用');
+          } catch (cloudErr) {
+            data._version = baseVersion;
+            showInfoBar('☁️ 无法连接云端，已离线导入数据', 3000);
+          }
+          appData = data;
+          pendingOperations = [];
+          selectedNodeId = null; expandedNodeIds.clear();
+          const root = getCurrentRoot(); if (root) expandedNodeIds.add(root.id);
+          saveDataToLocal(); renderTree(); refreshDetailView(); updateFamilySelector(); switchTab('properties');
+          refreshEditButtons();
+        } else if (data.isRoot) {
+          const fam = { id: generateId(), name: '导入的家族', root: data, preface: '' };
+          addOperation('addFamily', { family: fam });
+          appData.currentFamilyId = fam.id;
+          selectedNodeId = null; expandedNodeIds.clear(); expandedNodeIds.add(fam.root.id);
+          renderTree(); refreshDetailView(); updateFamilySelector();
+        } else { throw new Error('格式错误'); }
+      } catch (ex) { alert('文件格式错误或损坏'); }
+    };
+    reader.readAsText(f);
   }
 
   function updateFamilySelector() {
@@ -978,6 +893,7 @@
     if (dur > 0) setTimeout(() => { if (bar.parentNode) bar.remove(); }, dur);
   }
 
+  // 排序对话框
   function openSortDialog() {
     if (!selectedNodeId || !getCurrentRoot()) return;
     const node = findNodeById(getCurrentRoot(), selectedNodeId);
@@ -1011,14 +927,8 @@
     document.body.appendChild(overlay);
     if (isAdmin) {
       overlay.querySelector('#prefaceCancel').onclick = () => overlay.remove();
-      overlay.querySelector('#prefaceSave').onclick = () => {
-        const newPreface = overlay.querySelector('#prefaceTextarea').value;
-        addOperation('setFamilyPreface', { familyId: fam.id, preface: newPreface });
-        overlay.remove();
-      };
-    } else {
-      overlay.querySelector('#prefaceCancel').onclick = () => overlay.remove();
-    }
+      overlay.querySelector('#prefaceSave').onclick = () => { const newPreface = overlay.querySelector('#prefaceTextarea').value; addOperation('setFamilyPreface', { familyId: fam.id, preface: newPreface }); overlay.remove(); };
+    } else { overlay.querySelector('#prefaceCancel').onclick = () => overlay.remove(); }
     overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
   }
 
@@ -1111,8 +1021,7 @@
 
   function showContextMenu(x, y, node) {
     const menu = document.getElementById('contextMenu');
-    menu.style.left = x + 'px';
-    menu.style.top = y + 'px';
+    menu.style.left = x + 'px'; menu.style.top = y + 'px';
     const items = menu.querySelectorAll('.cm-item');
     const isAdmin = (currentUserRole === 'admin');
     const isViewer = (currentUserRole === 'viewer');
@@ -1138,83 +1047,8 @@
   function exportData() { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(appData, null, 2)])); a.download = '源锦族谱管理备份.json'; a.click(); }
   function importData() { document.getElementById('fileInput').click(); }
 
-  async function handleFileImport(e) {
-    const f = e.target.files[0]; if (!f) return;
-    const reader = new FileReader();
-    reader.onload = async (ev) => {
-      try {
-        const data = JSON.parse(ev.target.result);
-        if (data.families && Array.isArray(data.families)) {
-          data._forceOverwrite = true;
-          try {
-            const res = await fetch(CLOUD_API_URL, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
-            if (!res.ok) { const err = await res.json(); throw new Error(err.error || '导入失败'); }
-            const result = await res.json();
-            baseVersion = result.version; data._version = result.version;
-            appData = data; pendingOperations = [];
-            selectedNodeId = null; expandedNodeIds.clear();
-            const root = getCurrentRoot(); if (root) expandedNodeIds.add(root.id);
-            saveDataToLocal(); renderTree(); refreshDetailView(); updateFamilySelector(); switchTab('properties');
-            refreshEditButtons();
-          } catch (err) { alert('导入失败: ' + err.message); }
-        } else if (data.isRoot) {
-          const fam = { id: generateId(), name: '导入的家族', root: data, preface: '' };
-          addOperation('addFamily', { family: fam });
-          appData.currentFamilyId = fam.id;
-          selectedNodeId = null; expandedNodeIds.clear(); expandedNodeIds.add(fam.root.id);
-          renderTree(); refreshDetailView(); updateFamilySelector();
-        } else throw new Error();
-      } catch (ex) { alert('文件格式错误'); }
-    };
-    reader.readAsText(f);
-  }
-
-  async function deleteAllData() {
-    if (appData.families.length === 0) { alert('没有数据可删除'); return; }
-    if (!confirm('确定删除所有家族及全部成员数据吗？此操作不可恢复，但您可撤销。')) return;
-    pendingDeleteAllData = JSON.parse(JSON.stringify(appData));
-    const ops = appData.families.map(f => ({ action: 'deleteFamily', payload: { familyId: f.id } }));
-    for (const op of ops) { localApply(op); }
-    appData.currentFamilyId = null; selectedNodeId = null; expandedNodeIds.clear();
-    saveDataToLocal(); renderTree(); refreshDetailView(); updateFamilySelector(); refreshEditButtons();
-    showUndoBarForAllData();
-    try {
-      const res = await fetch(CLOUD_API_URL, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ operations: ops }) });
-      if (res.ok) { const result = await res.json(); baseVersion = result.version; saveDataToLocal(); }
-      else { const err = await res.json(); showInfoBar('⚠️ 服务器同步失败: ' + (err.error || '未知错误'), 5000); }
-    } catch (e) { showInfoBar('⚠️ 网络错误，数据未同步', 5000); }
-  }
-
-  function showUndoBarForAllData() {
-    const ex = document.querySelector('.undo-bar'); if (ex) ex.remove();
-    const bar = document.createElement('div'); bar.className = 'undo-bar';
-    bar.innerHTML = `已删除所有数据 <button id="undoDeleteAllBtn">撤销删除 (Ctrl+Z)</button>`;
-    document.getElementById('appWindow').prepend(bar);
-    document.getElementById('undoDeleteAllBtn').onclick = () => {
-      if (!pendingDeleteAllData) return;
-      appData = pendingDeleteAllData; baseVersion = appData._version || 0;
-      pendingDeleteAllData = null; pendingOperations = [];
-      selectedNodeId = null; expandedNodeIds.clear();
-      const root = getCurrentRoot(); if (root) expandedNodeIds.add(root.id);
-      saveDataToLocal(); renderTree(); refreshDetailView(); updateFamilySelector();
-      bar.remove(); showInfoBar('已撤销删除');
-      refreshEditButtons();
-    };
-  }
-
-  function updateViewModeButtons(m) { document.querySelectorAll('#viewModeBar button[data-mode]').forEach(b=>b.classList.remove('active')); const btn=document.querySelector(`#viewModeBar button[data-mode="${m}"]`); if(btn)btn.classList.add('active'); }
-  function updateZoomButtons(){ document.getElementById('btnFitScreen').classList.toggle('active',autoFitEnabled); document.getElementById('btnOriginalSize').classList.toggle('active',!autoFitEnabled && currentScale===1); }
-  function setViewMode(mode){ if(mode==='custom'){ showCustomRangeDialog((up,down)=>{customUp=up;customDown=down;relationViewMode='custom';updateViewModeButtons('custom');switchToRelation();}); return; } relationViewMode=mode; updateViewModeButtons(mode); switchToRelation(); }
-  function switchToRelation(){ if(currentTab!=='relation'){ currentTab='relation'; document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active')); document.querySelectorAll('.tab-content').forEach(c=>c.classList.remove('active')); document.querySelector('[data-tab="relation"]').classList.add('active'); document.getElementById('tab-relation').classList.add('active'); } refreshDetailView(); }
-  function showCustomRangeDialog(cb){
-    const overlay=document.createElement('div'); overlay.className='modal-overlay';
-    overlay.innerHTML=`<div class="modal-dialog" style="width:360px;"><div class="modal-header">自定义代数</div><div class="modal-body"><div class="form-group"><label>向上代数(0-9)</label><input type="number" id="customUp" value="${customUp}" min="0" max="9" style="width:100%;padding:8px;"></div><div class="form-group"><label>向下代数(0-9)</label><input type="number" id="customDown" value="${customDown}" min="0" max="9" style="width:100%;padding:8px;"></div></div><div class="modal-footer"><button class="btn-cancel" id="cancelCustom">取消</button><button class="btn-primary" id="okCustom">确定</button></div></div>`;
-    document.body.appendChild(overlay);
-    overlay.querySelector('#cancelCustom').onclick=()=>overlay.remove();
-    overlay.querySelector('#okCustom').onclick=()=>{ let u=parseInt(document.getElementById('customUp').value)||0, d=parseInt(document.getElementById('customDown').value)||0; u=Math.min(9,Math.max(0,u)); d=Math.min(9,Math.max(0,d)); overlay.remove(); cb(u,d); };
-  }
-
-  function renderOrgChart(node){
+  // 关系图与缩放
+  function renderOrgChart(node) {
     const gen = (node && !node.isRoot) ? getNodePath(node).length : 0;
     document.getElementById('detailTitle').innerHTML = node
       ? `🏢 ${escapeHtml(node.name)}${gen > 0 ? `<span style="font-size:10px; color:#444; margin-left:6px;">(第${gen}代)</span>` : ''}`
@@ -1267,37 +1101,129 @@
   function zoomReset(){ autoFitEnabled=false; currentScale=1; applyScale(); updateZoomButtons(); }
   function zoomToFit(){ const t=document.getElementById('orgTree'),c=document.getElementById('orgChartContainer'); if(!t||!c) return; currentScale=Math.min(1,(c.clientWidth-40)/t.scrollWidth); autoFitEnabled=true; applyScale(); updateZoomButtons(); }
 
-  function setupPinchZoom() {
-    const container = document.getElementById('orgChartContainer');
-    if (!container) return;
-    let initialDistance = 0;
-    let initialScale = 1;
-    container.addEventListener('touchstart', (e) => { if (e.touches.length === 2) { e.preventDefault(); initialDistance = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY); initialScale = currentScale; } }, { passive: false });
-    container.addEventListener('touchmove', (e) => { if (e.touches.length === 2) { e.preventDefault(); const newDistance = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY); if (initialDistance > 0) { const newScale = initialScale * (newDistance / initialDistance); currentScale = Math.min(3, Math.max(0.2, newScale)); applyScale(); updateZoomButtons(); autoFitEnabled = false; } } }, { passive: false });
-    container.addEventListener('touchend', () => { initialDistance = 0; });
+  function updateViewModeButtons(m) { document.querySelectorAll('#viewModeBar button[data-mode]').forEach(b=>b.classList.remove('active')); const btn=document.querySelector(`#viewModeBar button[data-mode="${m}"]`); if(btn)btn.classList.add('active'); }
+  function updateZoomButtons(){ document.getElementById('btnFitScreen').classList.toggle('active',autoFitEnabled); document.getElementById('btnOriginalSize').classList.toggle('active',!autoFitEnabled && currentScale===1); }
+  function setViewMode(mode){ if(mode==='custom'){ showCustomRangeDialog((up,down)=>{customUp=up;customDown=down;relationViewMode='custom';updateViewModeButtons('custom');switchToRelation();}); return; } relationViewMode=mode; updateViewModeButtons(mode); switchToRelation(); }
+  function switchToRelation(){ if(currentTab!=='relation'){ currentTab='relation'; document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active')); document.querySelectorAll('.tab-content').forEach(c=>c.classList.remove('active')); document.querySelector('[data-tab="relation"]').classList.add('active'); document.getElementById('tab-relation').classList.add('active'); } refreshDetailView(); }
+  function showCustomRangeDialog(cb){
+    const overlay=document.createElement('div'); overlay.className='modal-overlay';
+    overlay.innerHTML=`<div class="modal-dialog" style="width:360px;"><div class="modal-header">自定义代数</div><div class="modal-body"><div class="form-group"><label>向上代数(0-9)</label><input type="number" id="customUp" value="${customUp}" min="0" max="9" style="width:100%;padding:8px;"></div><div class="form-group"><label>向下代数(0-9)</label><input type="number" id="customDown" value="${customDown}" min="0" max="9" style="width:100%;padding:8px;"></div></div><div class="modal-footer"><button class="btn-cancel" id="cancelCustom">取消</button><button class="btn-primary" id="okCustom">确定</button></div></div>`;
+    document.body.appendChild(overlay);
+    overlay.querySelector('#cancelCustom').onclick=()=>overlay.remove();
+    overlay.querySelector('#okCustom').onclick=()=>{ let u=parseInt(document.getElementById('customUp').value)||0, d=parseInt(document.getElementById('customDown').value)||0; u=Math.min(9,Math.max(0,u)); d=Math.min(9,Math.max(0,d)); overlay.remove(); cb(u,d); };
   }
 
-  function exportChartImage(){
-    const orgTree=document.getElementById('orgTree'), container=document.getElementById('orgChartContainer');
-    if(!orgTree||!container) return;
-    const prevT=orgTree.style.transform, prevO=container.style.overflow, prevW=container.style.width, prevH=container.style.height;
-    const fw=orgTree.scrollWidth+60, fh=orgTree.scrollHeight+60;
-    orgTree.style.transform='scale(1)'; container.style.overflow='visible'; container.style.width=fw+'px'; container.style.height=fh+'px';
-    const nodes=[...container.querySelectorAll('.org-node')]; const shadows=nodes.map(n=>({n,bs:n.style.boxShadow})); nodes.forEach(n=>n.style.boxShadow='none');
-    html2canvas(container,{backgroundColor:'#ffffff',scale:2,allowTaint:false,useCORS:true,logging:false,width:fw,height:fh,windowWidth:fw,windowHeight:fh,
-      onclone:clonedDoc=>{
-        const cc=clonedDoc.getElementById('orgChartContainer'); if(cc){cc.style.overflow='visible';cc.style.width=fw+'px';cc.style.height=fh+'px';cc.style.background='#ffffff';}
-        const ct=clonedDoc.getElementById('orgTree'); if(ct){ct.style.transform='scale(1)';ct.style.background='#ffffff';}
-        clonedDoc.querySelectorAll('.org-node').forEach(n=>n.style.boxShadow='none');
-      }
-    }).then(canvas=>{
-      orgTree.style.transform=prevT; container.style.overflow=prevO; container.style.width=prevW; container.style.height=prevH;
-      shadows.forEach(s=>s.n.style.boxShadow=s.bs);
-      const a=document.createElement('a'); a.download='辈分关系图.png'; a.href=canvas.toDataURL('image/png'); a.click();
-    }).catch(err=>{ orgTree.style.transform=prevT; container.style.overflow=prevO; container.style.width=prevW; container.style.height=prevH; shadows.forEach(s=>s.n.style.boxShadow=s.bs); alert('导出失败:'+err); });
+  // 权限与角色
+  function applyRolePermissions() {
+    const isAdmin = (currentUserRole === 'admin');
+    document.getElementById('menuFile').style.display = isAdmin ? '' : 'none';
+    document.getElementById('menuBackup').style.display = isAdmin ? '' : 'none';
+    document.getElementById('menuAdmin').style.display = isAdmin ? '' : 'none';
+    document.getElementById('btnExportChart').style.display = isAdmin ? '' : 'none';
+    refreshEditButtons();
   }
 
-  function openSearchDialog(){
+  function isFatherOfCurrentUser(node) {
+    if (currentUserRole !== 'editor') return false;
+    const username = document.getElementById('usernameDisplay').textContent.split(' ')[0];
+    if (!node || !node.children) return false;
+    return node.children.some(child => child.name === username);
+  }
+
+  function canEditNode(node) {
+    if (!node) return false;
+    if (currentUserRole === 'admin' && node.isRoot) return true;
+    if (node.isRoot) return false;
+    if (currentUserRole === 'admin') return true;
+    if (currentUserRole === 'viewer') return false;
+    if (currentUserRole === 'editor') {
+      const username = document.getElementById('usernameDisplay').textContent.split(' ')[0];
+      if (node.name === username) return true;
+      if (isFatherOfCurrentUser(node)) return true;
+      const root = getCurrentRoot(); let cur = node;
+      while (cur) { const p = findParentNode(root, cur.id); if (!p || p.isRoot) break; if (p.name === username) return true; cur = p; }
+      return false;
+    }
+    return false;
+  }
+
+  function canAddSibling(node) {
+    if (!node || node.isRoot) return false;
+    if (currentUserRole === 'admin') return true;
+    if (currentUserRole === 'viewer') return false;
+    if (isFatherOfCurrentUser(node)) return false;
+    return canEditNode(node);
+  }
+
+  function refreshEditButtons() {
+    const isAdmin = (currentUserRole === 'admin');
+    const isEditor = (currentUserRole === 'editor');
+    const node = selectedNodeId ? findNodeById(getCurrentRoot(), selectedNodeId) : null;
+    const canEdit = node ? canEditNode(node) : false;
+    const canSibling = node ? canAddSibling(node) : false;
+    const editButtons = document.querySelectorAll('.edit-btn');
+    if (isAdmin) { editButtons.forEach(b => b.disabled = false); }
+    else if (isEditor) { editButtons.forEach(b => { if (b.id === 'btnAddSibling') b.disabled = !canSibling; else b.disabled = !canEdit; }); }
+    else { editButtons.forEach(b => b.disabled = true); }
+  }
+
+  // 备份、用户管理、搜索、帮助等完整实现
+  async function openBackupDialog() {
+    try {
+      const res = await fetch('/api/data?action=list_backups');
+      if (!res.ok) { alert('获取备份列表失败'); return; }
+      const data = await res.json();
+      const backups = data.backups || [];
+      const overlay = document.createElement('div'); overlay.className = 'modal-overlay';
+      let listHtml = backups.length === 0 ? '<div style="padding:20px;text-align:center;color:#888;">暂无备份</div>' : backups.map(b => `<div style="display:flex;justify-content:space-between;padding:8px;border-bottom:1px solid #eee;"><span>${new Date(b.timestamp).toLocaleString()}</span><button data-key="${b.key}" class="restoreBtn btn-primary" style="padding:4px 12px;">恢复此版本</button></div>`).join('');
+      overlay.innerHTML = `<div class="modal-dialog"><div class="modal-header">备份管理（自动每5分钟备份）</div><div class="modal-body">${listHtml}</div><div class="modal-footer"><button class="btn-cancel" id="closeBackup">关闭</button></div></div>`;
+      document.body.appendChild(overlay);
+      overlay.querySelector('#closeBackup').onclick = () => overlay.remove();
+      overlay.querySelectorAll('.restoreBtn').forEach(btn => {
+        btn.onclick = async () => {
+          if (!confirm('确定要恢复到该备份吗？当前数据将被覆盖。')) return;
+          const backupKey = btn.dataset.key;
+          const res = await fetch('/api/data?action=restore', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ backupKey }) });
+          if (res.ok) { alert('恢复成功！页面将刷新。'); location.reload(); }
+          else { const err = await res.json(); alert('恢复失败：' + (err.error || '未知错误')); }
+        };
+      });
+      overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+    } catch (e) { alert('请求失败：' + e.message); }
+  }
+
+  async function openAdminDialog() {
+    try {
+      const res = await fetch('/api/admin/users');
+      if (!res.ok) { alert('获取用户列表失败'); return; }
+      const data = await res.json();
+      const users = data.users || [];
+      const overlay = document.createElement('div'); overlay.className = 'modal-overlay';
+      let listHtml = users.length === 0 ? '<div style="padding:20px;text-align:center;">暂无其他用户</div>' : users.map(u => `<div style="display:flex;justify-content:space-between;padding:8px;border-bottom:1px solid #eee;"><span>${escapeHtml(u.username)} (${u.role === 'editor' ? '编辑用户' : '浏览用户'})</span><div><button class="resetPwdBtn btn-primary" data-username="${escapeHtml(u.username)}" style="padding:4px 12px;margin-right:4px;">重置密码</button><button class="deleteUserBtn btn-primary" data-username="${escapeHtml(u.username)}" style="padding:4px 12px;background:#c42b1c;border-color:#a0301c;">删除</button></div></div>`).join('');
+      overlay.innerHTML = `<div class="modal-dialog"><div class="modal-header">用户管理</div><div class="modal-body">${listHtml}</div><div class="modal-footer"><button class="btn-cancel" id="closeAdmin">关闭</button></div></div>`;
+      document.body.appendChild(overlay);
+      overlay.querySelector('#closeAdmin').onclick = () => overlay.remove();
+      overlay.querySelectorAll('.resetPwdBtn').forEach(btn => {
+        btn.onclick = async () => {
+          if (!confirm(`确定要将用户 ${btn.dataset.username} 的密码重置为 123456 吗？`)) return;
+          const res = await fetch('/api/admin/reset-password', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: btn.dataset.username }) });
+          if (res.ok) { alert('密码已重置'); overlay.remove(); openAdminDialog(); }
+          else { const err = await res.json(); alert(err.error || '操作失败'); }
+        };
+      });
+      overlay.querySelectorAll('.deleteUserBtn').forEach(btn => {
+        btn.onclick = async () => {
+          if (!confirm(`确定要删除用户 ${btn.dataset.username} 吗？此操作不可恢复！`)) return;
+          const res = await fetch('/api/admin/delete-user', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: btn.dataset.username }) });
+          if (res.ok) { alert('用户已删除'); overlay.remove(); openAdminDialog(); }
+          else { const err = await res.json(); alert(err.error || '删除失败'); }
+        };
+      });
+      overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+    } catch (e) { alert('请求失败：' + e.message); }
+  }
+
+  function openSearchDialog() {
     const overlay=document.createElement('div'); overlay.className='modal-overlay';
     overlay.innerHTML=`<div class="modal-dialog" style="width:450px;"><div class="modal-header">🔍 搜索</div><div class="modal-body"><div class="form-group"><label>关键字（空格分隔）</label><input type="text" id="searchInput" style="width:100%;padding:8px;"></div></div><div class="modal-footer"><button class="btn-cancel" id="searchCancel">取消</button><button class="btn-primary" id="searchOk">搜索</button></div></div>`;
     document.body.appendChild(overlay);
@@ -1319,22 +1245,128 @@
     overlay.querySelectorAll('[data-id]').forEach(el=>el.addEventListener('click',()=>{ const id=el.dataset.id; overlay.remove(); const node=findNodeById(root,id); if(node){ let p=node; while(p){ const par=findParentNode(root,p.id); if(par) expandedNodeIds.add(par.id); p=par; } expandedNodeIds.add(node.id); selectNode(node.id); switchTab('properties'); } }));
   }
 
-  async function loadUserInfo(){
-    try{
-      const res = await fetch('/api/auth/me');
-      if(res.ok){
-        const u = await res.json();
-        currentUserRole = u.role || 'viewer';
-        const roleText = currentUserRole === 'admin' ? '管理员' : currentUserRole === 'editor' ? '编辑用户' : '浏览用户';
-        document.getElementById('usernameDisplay').textContent = `${u.username} (${roleText})`;
-        applyRolePermissions();
-      } else {
-        document.getElementById('usernameDisplay').textContent = '未登录';
-      }
-    } catch(e) { document.getElementById('usernameDisplay').textContent = '获取失败'; }
+  async function deleteAllData() {
+    if (appData.families.length === 0) { alert('没有数据可删除'); return; }
+    if (!confirm('确定删除所有家族及全部成员数据吗？此操作不可恢复，但您可撤销。')) return;
+    pendingDeleteAllData = JSON.parse(JSON.stringify(appData));
+    const ops = appData.families.map(f => ({ action: 'deleteFamily', payload: { familyId: f.id } }));
+    for (const op of ops) { localApply(op); }
+    appData.currentFamilyId = null; selectedNodeId = null; expandedNodeIds.clear();
+    saveDataToLocal(); renderTree(); refreshDetailView(); updateFamilySelector(); refreshEditButtons();
+    showUndoBarForAllData();
+    try {
+      const res = await fetch(CLOUD_API_URL, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ operations: ops }) });
+      if (res.ok) { const result = await res.json(); baseVersion = result.version; saveDataToLocal(); }
+      else { const err = await res.json(); showInfoBar('⚠️ 服务器同步失败: ' + (err.error || '未知错误'), 5000); }
+    } catch (e) { showInfoBar('⚠️ 网络错误，数据未同步', 5000); }
+  }
+  function showUndoBarForAllData() {
+    const ex = document.querySelector('.undo-bar'); if (ex) ex.remove();
+    const bar = document.createElement('div'); bar.className = 'undo-bar';
+    bar.innerHTML = `已删除所有数据 <button id="undoDeleteAllBtn">撤销删除 (Ctrl+Z)</button>`;
+    document.getElementById('appWindow').prepend(bar);
+    document.getElementById('undoDeleteAllBtn').onclick = () => {
+      if (!pendingDeleteAllData) return;
+      appData = pendingDeleteAllData; baseVersion = appData._version || 0;
+      pendingDeleteAllData = null; pendingOperations = [];
+      selectedNodeId = null; expandedNodeIds.clear();
+      const root = getCurrentRoot(); if (root) expandedNodeIds.add(root.id);
+      saveDataToLocal(); renderTree(); refreshDetailView(); updateFamilySelector();
+      bar.remove(); showInfoBar('已撤销删除');
+      refreshEditButtons();
+    };
   }
 
-  function changePassword(){
+  function showHelp() {
+    const overlay = document.createElement('div'); overlay.className = 'modal-overlay';
+    const helpContent = `源锦族谱管理系统 - 帮助文档
+
+
+一、用户角色与权限
+角色\t权限说明
+管理员 (admin)\t拥有全部功能：创建/删除/重命名家族，编辑所有成员信息，管理用户，导入导出数据，备份恢复。
+编辑用户 (editor)\t用户名需与族谱中某成员姓名一致。可编辑：本人、直系后代、父亲。可为上述成员添加子成员/兄弟。不可对父亲添加兄弟。不能新建/删除家族、编辑序言、导出关系图、使用文件菜单。
+浏览用户 (viewer)\t仅查看数据，不能做任何修改。
+
+二、快速入门
+选择家族：使用顶部工具栏的家族下拉菜单切换当前家族。
+查看成员：左侧树形列表点击成员，右侧显示详细信息。
+编辑信息：在“个人信息”选项卡中，双击某个字段即可修改。支持姓名、性别、出生日期、配偶、自定义属性等。
+添加成员：选中父成员后，点击“添加子成员”或右键选择操作。
+搜索：菜单栏“搜索”可按关键字查找成员，关键字包含名字、配偶姓氏。
+
+三、成员管理
+添加子成员：选中父节点，点击工具栏“➕ 添加子成员”。
+添加兄弟：选中某成员，点击“👥 添加兄弟”。
+删除成员：选中后点击“⚠️ 删除成员”，删除后可通过顶部撤销按钮或 Ctrl+Z 恢复。
+子女排序：选中父母节点，点击“↕️ 子女排序”，可拖动调整子女显示顺序。
+
+四、个人信息编辑
+双击表格中的“数据”列即可编辑。
+固定字段：姓名、性别、出生日期、出生地、配偶。
+点击“📝 添加信息”可添加自定义属性；点击“🗑️ 删除信息”可删除自定义属性。
+子女、女儿信息不可直接编辑，点击名称可跳转到对应成员。
+
+五、辈分关系图
+切换到“辈分关系图”选项卡查看树状结构。
+查看范围：可选择全图、上下各2代、同辈或自定义代数。
+缩放操作：使用 +/- 按钮或双指缩放（触屏）；点击“适应屏幕”自动调整大小。
+导出图片（仅管理员）：点击“📷 导出图片”保存为PNG。
+
+六、家族管理
+新建家族（管理员）：菜单栏“家族管理” → “新建家族”。
+切换家族：工具栏下拉菜单或家族管理窗口。
+序言编辑（管理员）：点击工具栏“📜 序言”可编写家族序言。
+
+七、数据同步与备份
+所有修改会在编辑完成后几秒内自动同步到云端。
+若多人同时编辑发生冲突，系统会弹出提示框，您可选择：
+重试同步：再次尝试提交本地修改。
+放弃本地修改，加载云端：用云端数据覆盖本地。
+忽略：保留本地修改，稍后处理。
+手动同步：菜单栏“文件”→“上传到云端”。
+备份管理（管理员）：菜单栏“备份管理”可查看自动备份（每5分钟一次）并恢复。
+
+八、用户管理（管理员）
+点击菜单栏“用户管理”，可重置其他用户的密码为 123456 或删除用户账号。
+
+九、快捷操作
+右键菜单：在树状列表右键成员可快速添加子成员/兄弟/信息/删除。
+键盘快捷键：
+Delete：删除选中成员。
+Ctrl+Z：撤销最近删除。
+面板分割条：左右拖拽可调整树状列表宽度。
+
+十、注意事项
+删除成员将同时删除其所有后代，请谨慎操作。
+编辑用户只能对授权范围内的成员进行修改。
+退出登录时本地未同步的数据会丢失，请确保修改已同步完成。
+建议管理员定期使用备份功能保护数据。
+
+关于系统
+系统名称：源锦族谱管理系统
+版本：v1.0
+开发/版权所有：林及第
+联系方式：ld-1212@163.com
+
+技术说明：
+前端采用纯 HTML/CSS/JavaScript 单页应用，支持响应式布局，适配移动端。
+数据存储与同步基于云端 API，采用操作日志（PATCH）+ 版本号机制实现多人协作。
+支持多家族管理、角色权限控制、辈分关系图可视化、导入导出（JSON）、图片导出等功能。
+开源/许可：保留所有权利，未经授权不得商用。`;
+    overlay.innerHTML = `<div class="modal-dialog" style="width:700px; max-width:95vw;">
+      <div class="modal-header">📖 帮助文档</div>
+      <div class="modal-body" style="max-height:70vh; overflow-y:auto;">
+        <pre style="white-space: pre-wrap; font-family: inherit; font-size: 12.5px; color: #333; line-height: 1.6; margin: 0;">${helpContent}</pre>
+      </div>
+      <div class="modal-footer"><button class="btn-cancel" id="helpClose">关闭</button></div>
+    </div>`;
+    document.body.appendChild(overlay);
+    overlay.querySelector('#helpClose').onclick = () => overlay.remove();
+    overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+  }
+
+  function changePassword() {
     const overlay=document.createElement('div'); overlay.className='modal-overlay';
     overlay.innerHTML=`<div class="modal-dialog" style="width:360px;"><div class="modal-header">修改密码</div><div class="modal-body">
       <div class="form-group"><label>旧密码</label><input type="password" id="oldPass" style="width:100%;padding:8px;"></div>
@@ -1365,178 +1397,23 @@
     fetch('/api/auth/logout',{method:'POST'}).then(()=>window.location.href='/login.html').catch(()=>window.location.href='/login.html');
   }
 
-  function uploadOnClose(){
-    const payload = JSON.parse(JSON.stringify(appData));
-    payload._forceOverwrite = true;
-    fetch(CLOUD_API_URL, { method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload), keepalive:true }).catch(()=>{});
-  }
-
-  function showHelp() {
-    const overlay = document.createElement('div'); overlay.className = 'modal-overlay';
-    const helpContent = `源锦族谱管理系统 - 帮助文档
-
-一、用户角色与权限
-角色	权限说明
-管理员 (admin)	拥有全部功能：创建/删除/重命名家族，编辑所有成员信息，管理用户，导入导出数据，备份恢复。
-编辑用户 (editor)	用户名需与族谱中某成员姓名一致。可编辑：本人、直系后代、父亲。可为上述成员添加子成员/兄弟。不可对父亲添加兄弟。不能新建/删除家族、编辑序言、导出关系图、使用文件菜单。
-浏览用户 (viewer)	仅查看数据，不能做任何修改。
-二、快速入门
-选择家族：使用顶部工具栏的家族下拉菜单切换当前家族。
-查看成员：左侧树形列表点击成员，右侧显示详细信息。
-编辑信息：在“个人信息”选项卡中，双击某个字段即可修改。支持姓名、性别、出生日期、配偶、自定义属性等。
-添加成员：选中父成员后，点击“添加子成员”或右键选择操作。
-搜索：菜单栏“搜索”可按关键字查找成员，关键字包含名字、配偶姓氏。
-三、成员管理
-添加子成员：选中父节点，点击工具栏“➕ 添加子成员”。
-添加兄弟：选中某成员，点击“👥 添加兄弟”。
-删除成员：选中后点击“⚠️ 删除成员”，删除后可通过顶部撤销按钮或 Ctrl+Z 恢复。
-子女排序：选中父母节点，点击“↕️ 子女排序”，可拖动调整子女显示顺序。
-四、个人信息编辑
-双击表格中的“数据”列即可编辑。
-固定字段：姓名、性别、出生日期、出生地、配偶。
-点击“📝 添加信息”可添加自定义属性；点击“🗑️ 删除信息”可删除自定义属性。
-子女、女儿信息不可直接编辑，点击名称可跳转到对应成员。
-五、辈分关系图
-切换到“辈分关系图”选项卡查看树状结构。
-查看范围：可选择全图、上下各2代、同辈或自定义代数。
-缩放操作：使用 +/- 按钮或双指缩放（触屏）；点击“适应屏幕”自动调整大小。
-导出图片（仅管理员）：点击“📷 导出图片”保存为PNG。
-六、家族管理
-新建家族（管理员）：菜单栏“家族管理” → “新建家族”。
-切换家族：工具栏下拉菜单或家族管理窗口。
-序言编辑（管理员）：点击工具栏“📜 序言”可编写家族序言。
-七、数据同步与备份
-所有修改会在编辑完成后几秒内自动同步到云端。
-若多人同时编辑发生冲突，系统会弹出提示框，您可选择：
-重试同步：再次尝试提交本地修改。
-放弃本地修改，加载云端：用云端数据覆盖本地。
-忽略：保留本地修改，稍后处理。
-手动同步：菜单栏“文件”→“上传到云端”。
-备份管理（管理员）：菜单栏“备份管理”可查看自动备份（每5分钟一次）并恢复。
-八、用户管理（管理员）
-点击菜单栏“用户管理”，可重置其他用户的密码为 123456 或删除用户账号。
-九、快捷操作
-右键菜单：在树状列表右键成员可快速添加子成员/兄弟/信息/删除。
-键盘快捷键：
-Delete：删除选中成员。
-Ctrl+Z：撤销最近删除。
-面板分割条：左右拖拽可调整树状列表宽度。
-十、注意事项
-删除成员将同时删除其所有后代，请谨慎操作。
-编辑用户只能对授权范围内的成员进行修改。
-退出登录时本地未同步的数据会丢失，请确保修改已同步完成。
-建议管理员定期使用备份功能保护数据。
-关于系统
-系统名称：源锦族谱管理系统
-版本：v1.0
-开发/版权所有：林及第
-联系方式：ld-1212@163.com
-技术说明：
-前端采用纯 HTML/CSS/JavaScript 单页应用，支持响应式布局，适配移动端。
-数据存储与同步基于云端 API，采用操作日志（PATCH）+ 版本号机制实现多人协作。
-支持多家族管理、角色权限控制、辈分关系图可视化、导入导出（JSON）、图片导出等功能。
-开源/许可：保留所有权利，未经授权不得商用。`;
-    overlay.innerHTML = `<div class="modal-dialog" style="width:700px; max-width:95vw;">
-      <div class="modal-header">📖 帮助文档</div>
-      <div class="modal-body" style="max-height:70vh; overflow-y:auto;">
-        <pre style="white-space: pre-wrap; font-family: inherit; font-size: 12.5px; color: #333; line-height: 1.6; margin: 0;">${helpContent}</pre>
-      </div>
-      <div class="modal-footer">
-        <button class="btn-cancel" id="helpClose">关闭</button>
-      </div>
-    </div>`;
-    document.body.appendChild(overlay);
-    overlay.querySelector('#helpClose').onclick = () => overlay.remove();
-    overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
-  }
-
-  async function openBackupDialog() {
+  async function loadFromCloud() {
+    if (!confirm('从云端加载将覆盖当前所有数据，确定继续吗？')) return;
+    showInfoBar('正在从云端加载...', 0);
     try {
-      const res = await fetch('/api/data?action=list_backups');
-      if (!res.ok) { alert('获取备份列表失败'); return; }
-      const data = await res.json();
-      const backups = data.backups || [];
-      const overlay = document.createElement('div'); overlay.className = 'modal-overlay';
-      let listHtml = backups.length === 0
-        ? '<div style="padding:20px;text-align:center;color:#888;">暂无备份</div>'
-        : backups.map(b => `<div style="display:flex;justify-content:space-between;padding:8px;border-bottom:1px solid #eee;">
-            <span>${new Date(b.timestamp).toLocaleString()}</span>
-            <button data-key="${b.key}" class="restoreBtn btn-primary" style="padding:4px 12px;">恢复此版本</button>
-          </div>`).join('');
-      overlay.innerHTML = `<div class="modal-dialog"><div class="modal-header">备份管理（自动每5分钟备份）</div><div class="modal-body">${listHtml}</div><div class="modal-footer"><button class="btn-cancel" id="closeBackup">关闭</button></div></div>`;
-      document.body.appendChild(overlay);
-      overlay.querySelector('#closeBackup').onclick = () => overlay.remove();
-      overlay.querySelectorAll('.restoreBtn').forEach(btn => {
-        btn.onclick = async () => {
-          if (!confirm('确定要恢复到该备份吗？当前数据将被覆盖。')) return;
-          const backupKey = btn.dataset.key;
-          const res = await fetch('/api/data?action=restore', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ backupKey })
-          });
-          if (res.ok) {
-            alert('恢复成功！页面将刷新。');
-            location.reload();
-          } else {
-            const err = await res.json();
-            alert('恢复失败：' + (err.error || '未知错误'));
-          }
-        };
-      });
-      overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
-    } catch (e) {
-      alert('请求失败：' + e.message);
-    }
-  }
-
-  async function openAdminDialog() {
-    try {
-      const res = await fetch('/api/admin/users');
-      if (!res.ok) { alert('获取用户列表失败'); return; }
-      const data = await res.json();
-      const users = data.users || [];
-      const overlay = document.createElement('div'); overlay.className = 'modal-overlay';
-      let listHtml = users.length === 0
-        ? '<div style="padding:20px;text-align:center;">暂无其他用户</div>'
-        : users.map(u => `<div style="display:flex;justify-content:space-between;padding:8px;border-bottom:1px solid #eee;">
-            <span>${escapeHtml(u.username)} (${u.role === 'editor' ? '编辑用户' : '浏览用户'})</span>
-            <div>
-              <button class="resetPwdBtn btn-primary" data-username="${escapeHtml(u.username)}" style="padding:4px 12px;margin-right:4px;">重置密码</button>
-              <button class="deleteUserBtn btn-primary" data-username="${escapeHtml(u.username)}" style="padding:4px 12px;background:#c42b1c;border-color:#a0301c;">删除</button>
-            </div>
-          </div>`).join('');
-      overlay.innerHTML = `<div class="modal-dialog"><div class="modal-header">用户管理</div><div class="modal-body">${listHtml}</div><div class="modal-footer"><button class="btn-cancel" id="closeAdmin">关闭</button></div></div>`;
-      document.body.appendChild(overlay);
-      overlay.querySelector('#closeAdmin').onclick = () => overlay.remove();
-      overlay.querySelectorAll('.resetPwdBtn').forEach(btn => {
-        btn.onclick = async () => {
-          if (!confirm(`确定要将用户 ${btn.dataset.username} 的密码重置为 123456 吗？`)) return;
-          const res = await fetch('/api/admin/reset-password', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username: btn.dataset.username })
-          });
-          if (res.ok) { alert('密码已重置'); overlay.remove(); openAdminDialog(); }
-          else { const err = await res.json(); alert(err.error || '操作失败'); }
-        };
-      });
-      overlay.querySelectorAll('.deleteUserBtn').forEach(btn => {
-        btn.onclick = async () => {
-          if (!confirm(`确定要删除用户 ${btn.dataset.username} 吗？此操作不可恢复！`)) return;
-          const res = await fetch('/api/admin/delete-user', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username: btn.dataset.username })
-          });
-          if (res.ok) { alert('用户已删除'); overlay.remove(); openAdminDialog(); }
-          else { const err = await res.json(); alert(err.error || '删除失败'); }
-        };
-      });
-      overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
-    } catch (e) {
-      alert('请求失败：' + e.message);
-    }
+      const res = await fetch(CLOUD_API_URL);
+      if (res.ok) {
+        const cloudData = await res.json();
+        if (cloudData.families && Array.isArray(cloudData.families)) {
+          await loadRemoteData(cloudData, cloudData._version || 0);
+          showInfoBar('✅ 云端数据加载成功', 3000);
+        } else { showInfoBar('❌ 云端数据格式错误', 3000); }
+      } else {
+        const text = await res.text();
+        if (text.startsWith('<!DOCTYPE') || text.startsWith('<html')) showInfoBar('❌ 登录已过期，请重新登录', 5000);
+        else showInfoBar(`❌ 加载失败 (${res.status})`, 3000);
+      }
+    } catch (e) { showInfoBar(isNetworkError(e) ? '⚠️ 无法连接云端服务器' : `网络错误: ${e.message}`, 3000); }
   }
 
   function updateStatusBar(){
@@ -1545,70 +1422,59 @@ Ctrl+Z：撤销最近删除。
       const node = findNodeById(root, selectedNodeId);
       if(node && !node.isRoot){
         const ancestors = []; let cur = node;
-        while(cur){
-          if(!cur.isRoot) ancestors.unshift({id: cur.id, name: cur.name});
-          cur = findParentNode(root, cur.id);
-        }
+        while(cur){ if(!cur.isRoot) ancestors.unshift({id: cur.id, name: cur.name}); cur = findParentNode(root, cur.id); }
         const pathHtml = ancestors.map(a => `<a href="#" onclick="window.selectNode('${a.id}'); return false;" style="color:#0078d4; text-decoration:none; cursor:pointer;">${escapeHtml(a.name)}</a>`).join(' <span style="color:#888;">></span> ');
         document.getElementById('statusPath').innerHTML = pathHtml;
-      } else {
-        document.getElementById('statusPath').textContent = fam ? fam.name : '族谱管理系统';
-      }
-    } else {
-      document.getElementById('statusPath').textContent = fam ? fam.name : '族谱管理系统';
-    }
+      } else { document.getElementById('statusPath').textContent = fam ? fam.name : '族谱管理系统'; }
+    } else { document.getElementById('statusPath').textContent = fam ? fam.name : '族谱管理系统'; }
     const memberCount = root ? countMembers(root) : 0;
     const genCount = root ? getMaxGeneration(root) : 0;
     document.getElementById('statusCount').textContent = `共 ${memberCount} 位成员，${genCount} 代`;
   }
 
+  function setupPinchZoom() {
+    const container = document.getElementById('orgChartContainer');
+    if (!container) return;
+    let initialDistance = 0;
+    let initialScale = 1;
+    container.addEventListener('touchstart', (e) => { if (e.touches.length === 2) { e.preventDefault(); initialDistance = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY); initialScale = currentScale; } }, { passive: false });
+    container.addEventListener('touchmove', (e) => { if (e.touches.length === 2) { e.preventDefault(); const newDistance = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY); if (initialDistance > 0) { const newScale = initialScale * (newDistance / initialDistance); currentScale = Math.min(3, Math.max(0.2, newScale)); applyScale(); updateZoomButtons(); autoFitEnabled = false; } } }, { passive: false });
+    container.addEventListener('touchend', () => { initialDistance = 0; });
+  }
+
   function setupSash() {
     if (document.body.classList.contains('mobile-layout')) return;
-    const sash = document.getElementById('sash');
-    const mainBody = document.getElementById('mainBody');
-    const treePanel = document.getElementById('treePanel');
-    let startX = 0; let startWidth = 0; let dragging = false;
-    function onMouseMove(e) { if (!dragging) return; e.preventDefault(); const dx = e.clientX - startX; let newWidth = startWidth + dx; newWidth = Math.max(180, newWidth); treePanel.style.width = newWidth + 'px'; sash.classList.add('active'); }
-    function onMouseUp() { if (!dragging) return; dragging = false; sash.classList.remove('active'); document.removeEventListener('mousemove', onMouseMove); document.removeEventListener('mouseup', onMouseUp); document.body.style.cursor = ''; }
-    sash.addEventListener('mousedown', function(e) { e.preventDefault(); dragging = true; startX = e.clientX; startWidth = treePanel.getBoundingClientRect().width; document.addEventListener('mousemove', onMouseMove); document.addEventListener('mouseup', onMouseUp); document.body.style.cursor = 'col-resize'; });
+    const sash = document.getElementById('sash'), treePanel = document.getElementById('treePanel');
+    let startX = 0, startWidth = 0, dragging = false;
+    function onMouseMove(e) { if (!dragging) return; e.preventDefault(); const dx = e.clientX - startX; let w = Math.max(180, startWidth + dx); treePanel.style.width = w + 'px'; sash.classList.add('active'); }
+    function onMouseUp() { dragging = false; sash.classList.remove('active'); document.removeEventListener('mousemove', onMouseMove); document.removeEventListener('mouseup', onMouseUp); document.body.style.cursor = ''; }
+    sash.addEventListener('mousedown', e => { e.preventDefault(); dragging = true; startX = e.clientX; startWidth = treePanel.getBoundingClientRect().width; document.addEventListener('mousemove', onMouseMove); document.addEventListener('mouseup', onMouseUp); document.body.style.cursor = 'col-resize'; });
   }
 
-  function applyRolePermissions() {
-    const isAdmin = (currentUserRole === 'admin');
-    const menuFile = document.getElementById('menuFile'); if (menuFile) menuFile.style.display = isAdmin ? '' : 'none';
-    const menuBackup = document.getElementById('menuBackup'); if (menuBackup) menuBackup.style.display = isAdmin ? '' : 'none';
-    const menuAdmin = document.getElementById('menuAdmin'); if (menuAdmin) menuAdmin.style.display = isAdmin ? '' : 'none';
-    const btnExportChart = document.getElementById('btnExportChart'); if (btnExportChart) btnExportChart.style.display = isAdmin ? '' : 'none';
-    refreshEditButtons();
+  function exportChartImage(){
+    const orgTree=document.getElementById('orgTree'), container=document.getElementById('orgChartContainer');
+    if(!orgTree||!container) return;
+    const prevT=orgTree.style.transform, prevO=container.style.overflow, prevW=container.style.width, prevH=container.style.height;
+    const fw=orgTree.scrollWidth+60, fh=orgTree.scrollHeight+60;
+    orgTree.style.transform='scale(1)'; container.style.overflow='visible'; container.style.width=fw+'px'; container.style.height=fh+'px';
+    const nodes=[...container.querySelectorAll('.org-node')]; const shadows=nodes.map(n=>({n,bs:n.style.boxShadow})); nodes.forEach(n=>n.style.boxShadow='none');
+    html2canvas(container,{backgroundColor:'#ffffff',scale:2,allowTaint:false,useCORS:true,logging:false,width:fw,height:fh,windowWidth:fw,windowHeight:fh,
+      onclone:clonedDoc=>{
+        const cc=clonedDoc.getElementById('orgChartContainer'); if(cc){cc.style.overflow='visible';cc.style.width=fw+'px';cc.style.height=fh+'px';cc.style.background='#ffffff';}
+        const ct=clonedDoc.getElementById('orgTree'); if(ct){ct.style.transform='scale(1)';ct.style.background='#ffffff';}
+        clonedDoc.querySelectorAll('.org-node').forEach(n=>n.style.boxShadow='none');
+      }
+    }).then(canvas=>{
+      orgTree.style.transform=prevT; container.style.overflow=prevO; container.style.width=prevW; container.style.height=prevH;
+      shadows.forEach(s=>s.n.style.boxShadow=s.bs);
+      const a=document.createElement('a'); a.download='辈分关系图.png'; a.href=canvas.toDataURL('image/png'); a.click();
+    }).catch(err=>{ orgTree.style.transform=prevT; container.style.overflow=prevO; container.style.width=prevW; container.style.height=prevH; shadows.forEach(s=>s.n.style.boxShadow=s.bs); alert('导出失败:'+err); });
   }
 
-  function isFatherOfCurrentUser(node) { if (currentUserRole !== 'editor') return false; const username = document.getElementById('usernameDisplay').textContent.split(' ')[0]; if (!node || !node.children) return false; return node.children.some(child => child.name === username); }
-
-  function canEditNode(node) {
-    if (!node) return false; if (currentUserRole === 'admin' && node.isRoot) return true; if (node.isRoot) return false;
-    if (currentUserRole === 'admin') return true; if (currentUserRole === 'viewer') return false;
-    if (currentUserRole === 'editor') {
-      const username = document.getElementById('usernameDisplay').textContent.split(' ')[0];
-      if (node.name === username) return true; if (isFatherOfCurrentUser(node)) return true;
-      const root = getCurrentRoot(); let cur = node;
-      while (cur) { const p = findParentNode(root, cur.id); if (!p || p.isRoot) break; if (p.name === username) return true; cur = p; }
-      return false;
-    }
-    return false;
-  }
-
-  function canAddSibling(node) { if (!node || node.isRoot) return false; if (currentUserRole === 'admin') return true; if (currentUserRole === 'viewer') return false; if (isFatherOfCurrentUser(node)) return false; return canEditNode(node); }
-
-  function refreshEditButtons() {
-    const isAdmin = (currentUserRole === 'admin');
-    const isEditor = (currentUserRole === 'editor');
-    const node = selectedNodeId ? findNodeById(getCurrentRoot(), selectedNodeId) : null;
-    const canEdit = node ? canEditNode(node) : false;
-    const canSibling = node ? canAddSibling(node) : false;
-    const editButtons = document.querySelectorAll('.edit-btn');
-    if (isAdmin) { editButtons.forEach(b => b.disabled = false); }
-    else if (isEditor) { editButtons.forEach(b => { if (b.id === 'btnAddSibling') b.disabled = !canSibling; else b.disabled = !canEdit; }); }
-    else { editButtons.forEach(b => b.disabled = true); }
+  function uploadOnClose() {
+    const payload = JSON.parse(JSON.stringify(appData));
+    payload._forceOverwrite = true;
+    fetch(CLOUD_API_URL, { method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload), keepalive:true }).catch(()=>{});
   }
 
   document.addEventListener('keydown',function(e){
@@ -1624,31 +1490,9 @@ Ctrl+Z：撤销最近删除。
   document.addEventListener('focusin', (e) => { if (e.target.matches('input, textarea, select')) isUserEditing = true; });
   document.addEventListener('focusout', () => { setTimeout(() => { if (!document.activeElement || !document.activeElement.matches('input, textarea, select')) { isUserEditing = false; scheduleSync(); } }, 200); });
 
-  async function loadFromCloud() {
-    if (!confirm('从云端加载将覆盖当前所有数据，确定继续吗？')) return;
-    showInfoBar('正在从云端加载...', 0);
-    try {
-      const res = await fetch(CLOUD_API_URL);
-      if (res.ok) {
-        const cloudData = await res.json();
-        if (cloudData.families && Array.isArray(cloudData.families)) {
-          await loadRemoteData(cloudData, cloudData._version || 0);
-          showInfoBar('✅ 云端数据加载成功', 3000);
-        } else { showInfoBar('❌ 云端数据格式错误', 3000); }
-      } else {
-        const text = await res.text();
-        if (text.startsWith('<!DOCTYPE') || text.startsWith('<html')) {
-          showInfoBar('❌ 登录已过期，请刷新页面重新登录', 5000);
-        } else {
-          showInfoBar(`❌ 加载失败 (${res.status})`, 3000);
-        }
-      }
-    } catch (e) { showInfoBar(`❌ 网络错误: ${e.message}`, 3000); }
-  }
-
   async function init(){
-    await loadUserInfo();
-    applyRolePermissions();
+    const authOk = await checkAuth();
+    if (!authOk) return;
     loadData();
     initialSyncFromCloud().then(() => {
       const root = getCurrentRoot();
@@ -1672,11 +1516,9 @@ Ctrl+Z：撤销最近删除。
     window.setViewMode=setViewMode; window.zoomIn=zoomIn; window.zoomOut=zoomOut; window.zoomToFit=zoomToFit; window.zoomReset=zoomReset;
     window.exportChartImage=exportChartImage; window.openSortDialog=openSortDialog; window.openSearchDialog=openSearchDialog;
     window.openFamilyManageDialog=openFamilyManageDialog; window.openPrefaceDialog=openPrefaceDialog;
-    window.changePassword=changePassword; window.logout=logout;
-    window.deleteAllData=deleteAllData;
-    window.syncNow = syncNow;
-    window.openBackupDialog = openBackupDialog;
-    window.openAdminDialog = openAdminDialog;
+    window.changePassword=changePassword; window.logout=logout; window.deleteAllData=deleteAllData;
+    window.syncNow = syncNow; window.openBackupDialog = openBackupDialog; window.openAdminDialog = openAdminDialog;
+    window.loadFromCloud = loadFromCloud;
   }
   init();
   window.addChildMember=addChildMember; window.addSiblingMember=addSiblingMember;
@@ -1684,11 +1526,8 @@ Ctrl+Z：撤销最近删除。
   window.expandAllNodes=expandAllNodes; window.collapseAllNodes=collapseAllNodes;
   window.exportData=exportData; window.importData=importData; window.deleteAllData=deleteAllData;
   window.showHelp=showHelp; window.handleFileImport=handleFileImport; window.switchTab=switchTab;
-  window.switchFamily=switchFamily;
-  window.syncToCloud=syncNow; window.loadFromCloud=loadFromCloud;
-  window.selectNode = selectNode;
-  window.openBackupDialog = openBackupDialog;
-  window.openAdminDialog = openAdminDialog;
+  window.switchFamily=switchFamily; window.syncToCloud=syncNow; window.loadFromCloud=loadFromCloud;
+  window.selectNode = selectNode; window.openBackupDialog = openBackupDialog; window.openAdminDialog = openAdminDialog;
 })();
 </script>
 </body>
