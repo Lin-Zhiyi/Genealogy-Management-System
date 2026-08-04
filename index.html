@@ -416,12 +416,10 @@
 
   if (/Mobi|Android/i.test(navigator.userAgent)) document.body.classList.add('mobile-layout');
 
-  // 网络错误判断
   function isNetworkError(err) {
     return err instanceof TypeError && (err.message === 'Failed to fetch' || err.message === 'NetworkError when attempting to fetch resource.');
   }
 
-  // 认证检查，离线可用
   async function checkAuth() {
     try {
       const res = await fetch('/api/auth/me');
@@ -516,7 +514,8 @@
     if (!localApply(op)) { if (requiresRoot.includes(action)) { alert('操作失败，请刷新页面后重试'); } return false; }
     pendingOperations.push(op);
     renderTree(); refreshDetailView(); updateFamilySelector(); updateStatusBar();
-    saveDataToLocal(); scheduleSync();
+    saveDataToLocal();
+    scheduleSync();
     localStorage.setItem('has_pending_changes', '1');
     refreshEditButtons();
     return true;
@@ -546,10 +545,15 @@
         return;
       }
       if (res.status === 409) {
-        showInfoBar('⚠️ 数据版本冲突，您的修改未同步到云端，但已保存在本地', 5000);
+        showInfoBar('⚠️ 版本冲突，本地修改已保留，可稍后重试同步', 5000);
         return;
       }
-      showInfoBar('⚠️ 云端同步失败，数据已保存在本地', 5000);
+      const text = await res.text();
+      if (text.startsWith('<!DOCTYPE') || text.startsWith('<html')) {
+        showInfoBar('❌ 服务器返回异常，请刷新页面重试', 5000);
+      } else {
+        showInfoBar(`⚠️ 云端同步失败 (${res.status})，数据已保存在本地`, 5000);
+      }
     } catch (e) {
       showInfoBar(isNetworkError(e) ? '⚠️ 无法连接云端，数据已保存在本地' : `同步失败: ${e.message}`, 5000);
     }
@@ -893,7 +897,6 @@
     if (dur > 0) setTimeout(() => { if (bar.parentNode) bar.remove(); }, dur);
   }
 
-  // 排序对话框
   function openSortDialog() {
     if (!selectedNodeId || !getCurrentRoot()) return;
     const node = findNodeById(getCurrentRoot(), selectedNodeId);
@@ -1047,7 +1050,6 @@
   function exportData() { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(appData, null, 2)])); a.download = '源锦族谱管理备份.json'; a.click(); }
   function importData() { document.getElementById('fileInput').click(); }
 
-  // 关系图与缩放
   function renderOrgChart(node) {
     const gen = (node && !node.isRoot) ? getNodePath(node).length : 0;
     document.getElementById('detailTitle').innerHTML = node
@@ -1113,7 +1115,6 @@
     overlay.querySelector('#okCustom').onclick=()=>{ let u=parseInt(document.getElementById('customUp').value)||0, d=parseInt(document.getElementById('customDown').value)||0; u=Math.min(9,Math.max(0,u)); d=Math.min(9,Math.max(0,d)); overlay.remove(); cb(u,d); };
   }
 
-  // 权限与角色
   function applyRolePermissions() {
     const isAdmin = (currentUserRole === 'admin');
     document.getElementById('menuFile').style.display = isAdmin ? '' : 'none';
@@ -1167,7 +1168,6 @@
     else { editButtons.forEach(b => b.disabled = true); }
   }
 
-  // 备份、用户管理、搜索、帮助等完整实现
   async function openBackupDialog() {
     try {
       const res = await fetch('/api/data?action=list_backups');
@@ -1280,7 +1280,6 @@
   function showHelp() {
     const overlay = document.createElement('div'); overlay.className = 'modal-overlay';
     const helpContent = `源锦族谱管理系统 - 帮助文档
-
 
 一、用户角色与权限
 角色\t权限说明
@@ -1409,9 +1408,17 @@ Ctrl+Z：撤销最近删除。
           showInfoBar('✅ 云端数据加载成功', 3000);
         } else { showInfoBar('❌ 云端数据格式错误', 3000); }
       } else {
+        if (res.status === 401) {
+          showInfoBar('❌ 登录已过期，即将跳转到登录页', 3000);
+          setTimeout(() => window.location.href = '/login.html', 1500);
+          return;
+        }
         const text = await res.text();
-        if (text.startsWith('<!DOCTYPE') || text.startsWith('<html')) showInfoBar('❌ 登录已过期，请重新登录', 5000);
-        else showInfoBar(`❌ 加载失败 (${res.status})`, 3000);
+        if (text.startsWith('<!DOCTYPE') || text.startsWith('<html')) {
+          showInfoBar('❌ 服务器返回异常，请刷新页面重试', 5000);
+        } else {
+          showInfoBar(`❌ 加载失败 (${res.status})`, 3000);
+        }
       }
     } catch (e) { showInfoBar(isNetworkError(e) ? '⚠️ 无法连接云端服务器' : `网络错误: ${e.message}`, 3000); }
   }
