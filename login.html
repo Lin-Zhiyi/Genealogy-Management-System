@@ -3,24 +3,105 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>登录 - 族谱管理系统</title>
+  <title>源锦族谱管理系统 - 登录</title>
   <style>
-    body { font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif; background: #e8e8e8; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
-    .login-box { background: #fff; padding: 30px 40px; border-radius: 10px; box-shadow: 0 8px 32px rgba(0,0,0,0.15); width: 320px; }
-    h2 { text-align: center; margin-bottom: 20px; color: #0078d4; }
-    .form-group { margin-bottom: 15px; }
-    label { display: block; margin-bottom: 5px; font-weight: 500; color: #444; }
-    input { width: 100%; padding: 10px; border: 1px solid #c0c0c0; border-radius: 5px; font-size: 14px; box-sizing: border-box; }
-    button { width: 100%; padding: 10px; background: #0078d4; color: #fff; border: none; border-radius: 5px; font-size: 14px; cursor: pointer; margin-top: 10px; }
-    button:hover { background: #0066b8; }
-    .error { color: #c42b1c; font-size: 13px; margin-top: 10px; text-align: center; }
-    .link { text-align: center; margin-top: 15px; font-size: 13px; }
-    .link a { color: #0078d4; text-decoration: none; }
+    body {
+      font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
+      background: #e8e8e8;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      margin: 0;
+      padding: 20px;
+      box-sizing: border-box;
+    }
+    .login-box {
+      background: #fff;
+      padding: 30px 40px;
+      border-radius: 10px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.15);
+      width: 360px;
+      max-width: 100%;
+    }
+    h2 {
+      text-align: center;
+      margin: 0 0 5px 0;
+      color: #0078d4;
+      font-size: 22px;
+    }
+    .slogan {
+      text-align: center;
+      font-size: 13px;          /* 与正文一致 */
+      color: #333;              /* 深灰色，与锦成公文字颜色统一 */
+      margin-bottom: 20px;
+      letter-spacing: 2px;
+    }
+    .dedication {
+      font-size: 13px;          /* 保持统一字号 */
+      color: #333;              /* 深灰色，与锦成公一致 */
+      line-height: 1.7;
+      margin-bottom: 20px;
+      padding: 12px 15px;
+      background: #f8f9fc;
+      border-radius: 8px;
+      border-left: 4px solid #0078d4;
+    }
+    .form-group {
+      margin-bottom: 15px;
+    }
+    label {
+      display: block;
+      margin-bottom: 5px;
+      font-weight: 500;
+      color: #444;
+    }
+    input {
+      width: 100%;
+      padding: 10px;
+      border: 1px solid #c0c0c0;
+      border-radius: 5px;
+      font-size: 14px;
+      box-sizing: border-box;
+    }
+    button {
+      width: 100%;
+      padding: 10px;
+      background: #0078d4;
+      color: #fff;
+      border: none;
+      border-radius: 5px;
+      font-size: 14px;
+      cursor: pointer;
+      margin-top: 10px;
+    }
+    button:hover {
+      background: #0066b8;
+    }
+    .error {
+      color: #c42b1c;
+      font-size: 13px;
+      margin-top: 10px;
+      text-align: center;
+    }
+    .link {
+      text-align: center;
+      margin-top: 15px;
+      font-size: 13px;
+    }
+    .link a {
+      color: #0078d4;
+      text-decoration: none;
+    }
   </style>
 </head>
 <body>
   <div class="login-box">
-    <h2>🔐 族谱管理</h2>
+    <h2>源锦族谱管理系统</h2>
+    <div class="slogan">源清流远，锦谱永传</div>
+    <div class="dedication">
+      本系统为纪念 <strong>先祖父锦成公</strong> 而建。公数载呕心整理族谱，使宗族十余代之源流不致湮没。今以公之名，续宗族之源，以数字化方式，永续传承，致敬所有先人。
+    </div>
     <form id="loginForm">
       <div class="form-group">
         <label>用户名</label>
@@ -62,14 +143,14 @@
           body: JSON.stringify({ username, password })
         });
         if (res.ok) {
-  const params = new URLSearchParams(window.location.search);
-  let redirect = params.get('redirect') || '/';
-  // 防止循环：如果跳转目标是登录页或根，直接去 /
-  if (redirect.startsWith('/login') || redirect === '/') {
-    redirect = '/';
-  }
-  window.location.replace(redirect);
-} else {
+          const params = new URLSearchParams(window.location.search);
+          let redirect = params.get('redirect') || '/';
+          // 防止循环：如果跳转目标是登录页或根，直接去 /
+          if (redirect.startsWith('/login') || redirect === '/') {
+            redirect = '/';
+          }
+          window.location.replace(redirect);
+        } else {
           const data = await res.json();
           errorDiv.textContent = data.error || '登录失败';
         }
