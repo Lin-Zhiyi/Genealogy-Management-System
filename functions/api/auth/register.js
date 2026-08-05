@@ -1,30 +1,27 @@
 // functions/api/auth/register.js
-
-const rateLimitMap = new Map();
+import {
+  hashPassword,
+  verifyPassword,
+  checkRateLimit,
+  generateSalt
+} from '../../_utils/auth.js';
 
 export async function onRequestPost(context) {
   const { request, env } = context;
 
-  // 速率限制
-  const clientIP = request.headers.get('CF-Connecting-IP') || 'unknown';
-  const now = Date.now();
-  const windowMs = 60 * 1000;
-  if (!rateLimitMap.has(clientIP)) {
-    rateLimitMap.set(clientIP, { count: 1, resetAt: now + windowMs });
-  } else {
-    const entry = rateLimitMap.get(clientIP);
-    if (now > entry.resetAt) {
-      entry.count = 1;
-      entry.resetAt = now + windowMs;
-    } else {
-      entry.count++;
-      if (entry.count > 5) {
-        return new Response(JSON.stringify({ error: '请求过于频繁，请稍后再试' }), {
-          status: 429,
-          headers: { 'Content-Type': 'application/json' }
-        });
-      }
-    }
+  // 速率限制（基于 KV，支持多实例）
+  const clientIP = request.headers.get('CF-Connecting-IP') || request.headers.get('X-Forwarded-For') || 'unknown';
+  const rateLimitResult = await checkRateLimit(
+    env.USER_KV,
+    `ratelimit:register:${clientIP}`,
+    5,         // 每分钟最多 5 次
+    60 * 1000  // 60 秒窗口
+  );
+  if (!rateLimitResult.allowed) {
+    return new Response(JSON.stringify({ error: '请求过于频繁，请稍后再试' }), {
+      status: 429,
+      headers: { 'Content-Type': 'application/json' }
+    });
   }
 
   let body;
@@ -38,7 +35,6 @@ export async function onRequestPost(context) {
   }
 
   const { username, password, adminPassword } = body;
-
   if (!username || !password || !adminPassword) {
     return new Response(JSON.stringify({ error: '所有字段都是必填的' }), {
       status: 400,
@@ -90,7 +86,6 @@ export async function onRequestPost(context) {
       headers: { 'Content-Type': 'application/json' }
     });
   }
-
   if (!adminData) {
     return new Response(JSON.stringify({ error: '管理员账户未配置，无法注册' }), {
       status: 500,
@@ -108,18 +103,17 @@ export async function onRequestPost(context) {
     });
   }
 
-  const adminHashParts = adminUser.password.split(':');
-  if (adminHashParts.length !== 2) {
-    return new Response(JSON.stringify({ error: '管理员密码格式错误' }), {
+  try {
+    const adminPasswordValid = await verifyPassword(adminPassword, adminUser.password);
+    if (!adminPasswordValid) {
+      return new Response(JSON.stringify({ error: '管理员密码错误' }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+  } catch (e) {
+    return new Response(JSON.stringify({ error: '管理员密码验证失败' }), {
       status: 500,
-      headers: { 'Content-Type': 'application/json' }
-    });
-  }
-  const [adminSalt, adminStoredHash] = adminHashParts;
-  const adminHash = await sha512(adminSalt + adminPassword);
-  if (adminHash !== adminStoredHash) {
-    return new Response(JSON.stringify({ error: '管理员密码错误' }), {
-      status: 403,
       headers: { 'Content-Type': 'application/json' }
     });
   }
@@ -134,7 +128,6 @@ export async function onRequestPost(context) {
       headers: { 'Content-Type': 'application/json' }
     });
   }
-
   if (existing) {
     return new Response(JSON.stringify({ error: '用户名已存在' }), {
       status: 409,
@@ -161,13 +154,15 @@ export async function onRequestPost(context) {
     // 读取族谱数据失败，默认设为 viewer
   }
 
-  // 生成盐和哈希
-  const salt = generateSalt();
-  const hash = await sha512(salt + password);
+  // 使用 PBKDF2 生成密码哈希
+  const hashedPassword = await hashPassword(password);
+
   const user = {
     username,
-    password: `${salt}:${hash}`,
-    role
+    password: hashedPassword,
+    role,
+    pwdVersion: 1,
+    createdAt: Date.now()
   };
 
   try {
@@ -194,17 +189,4 @@ function memberNameExists(node, name) {
     }
   }
   return false;
-}
-
-async function sha512(message) {
-  const encoder = new TextEncoder();
-  const data = encoder.encode(message);
-  const hashBuffer = await crypto.subtle.digest('SHA-512', data);
-  return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
-}
-
-function generateSalt() {
-  const array = new Uint8Array(16);
-  crypto.getRandomValues(array);
-  return Array.from(array, byte => byte.toString(16).padStart(2, '0')).join('');
 }

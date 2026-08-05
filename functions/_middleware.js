@@ -1,4 +1,6 @@
 // functions/_middleware.js
+import { verifyToken, generateToken, isTokenBlacklisted } from './_utils/auth.js';
+
 export async function onRequest(context) {
   try {
     const { request, env, next } = context;
@@ -15,13 +17,24 @@ export async function onRequest(context) {
     const cookie = request.headers.get('Cookie') || '';
     const tokenMatch = cookie.match(/token=([^;]+)/);
     let isAuthenticated = false;
+    let tokenPayload = null;
+    let token = null;
 
     if (tokenMatch) {
+      token = tokenMatch[1];
       try {
-        await verifyToken(tokenMatch[1], env.JWT_SECRET);
-        isAuthenticated = true;
+        const { payload } = await verifyToken(token, env.JWT_SECRET);
+        // 检查 token 是否在黑名单中
+        const blacklisted = await isTokenBlacklisted(env.USER_KV, token);
+        if (blacklisted) {
+          isAuthenticated = false;
+        } else {
+          isAuthenticated = true;
+          tokenPayload = payload;
+        }
       } catch (e) {
-        // token 无效
+        // token 无效或已过期
+        isAuthenticated = false;
       }
     }
 
@@ -79,50 +92,82 @@ export async function onRequest(context) {
       }
     }
 
-    // 认证通过
+    // ===== 滑动续期 =====
+    // 如果 token 剩余时间小于 12 小时，重新签发新 token
+    let response;
+    if (tokenPayload) {
+      const now = Math.floor(Date.now() / 1000);
+      const remaining = tokenPayload.exp - now;
+
+      if (remaining < 12 * 3600 && remaining > 0) {
+        // 检查密码版本号是否一致（需要读取用户数据）
+        let pwdVersionValid = true;
+        try {
+          const userData = await env.USER_KV.get(`user:${tokenPayload.username}`);
+          if (userData) {
+            const user = JSON.parse(userData);
+            const currentPwdVersion = user.pwdVersion || 1;
+            const tokenPwdVersion = tokenPayload.pwdVersion || 1;
+            if (currentPwdVersion !== tokenPwdVersion) {
+              pwdVersionValid = false;
+            }
+          }
+        } catch (e) {
+          // 读取失败，默认通过（避免影响正常使用）
+        }
+
+        if (pwdVersionValid) {
+          // 生成新 token
+          const newToken = await generateToken(
+            {
+              username: tokenPayload.username,
+              role: tokenPayload.role,
+              pwdVersion: tokenPayload.pwdVersion || 1
+            },
+            env.JWT_SECRET,
+            '24h'
+          );
+
+          // 继续处理请求，但在响应中设置新 cookie
+          response = await next();
+
+          // 复制响应头并添加新 cookie
+          const newHeaders = new Headers(response.headers);
+          newHeaders.set('Set-Cookie', `token=${newToken}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=86400`);
+
+          return new Response(response.body, {
+            status: response.status,
+            statusText: response.statusText,
+            headers: newHeaders
+          });
+        } else {
+          // 密码版本不一致，token 已失效
+          const accept = request.headers.get('Accept') || '';
+          const isPageRequest = accept.includes('text/html');
+
+          if (isPageRequest) {
+            const redirectUrl = new URL('/login', request.url);
+            return new Response(null, {
+              status: 302,
+              headers: {
+                'Location': redirectUrl.toString(),
+                'Set-Cookie': 'token=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0'
+              }
+            });
+          } else {
+            return new Response(JSON.stringify({ error: '登录已过期，请重新登录' }), {
+              status: 401,
+              headers: { 'Content-Type': 'application/json' }
+            });
+          }
+        }
+      }
+    }
+
+    // 认证通过，无需续期
     return next();
+
   } catch (err) {
     return new Response(`Middleware Error: ${err.message}`, { status: 500 });
   }
-}
-
-// ---------- JWT 验证（与 login.js 完全一致）----------
-async function verifyToken(token, secret) {
-  const encoder = new TextEncoder();
-  const parts = token.split('.');
-  if (parts.length !== 3) throw new Error('Invalid token format');
-
-  const [headerB64, payloadB64, signatureB64] = parts;
-  const signature = base64UrlDecode(signatureB64);
-  const data = encoder.encode(`${headerB64}.${payloadB64}`);
-
-  const key = await crypto.subtle.importKey(
-    'raw',
-    encoder.encode(secret),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['verify']
-  );
-  const valid = await crypto.subtle.verify('HMAC', key, signature, data);
-  if (!valid) throw new Error('Signature invalid');
-
-  const payloadBytes = base64UrlDecode(payloadB64);
-  const payloadText = new TextDecoder().decode(payloadBytes);
-  const payload = JSON.parse(payloadText);
-
-  if (payload.exp && payload.exp < Date.now() / 1000) throw new Error('Token expired');
-  return { payload };
-}
-
-function base64UrlDecode(str) {
-  let base64 = str.replace(/-/g, '+').replace(/_/g, '/');
-  while (base64.length % 4) {
-    base64 += '=';
-  }
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return bytes;
 }

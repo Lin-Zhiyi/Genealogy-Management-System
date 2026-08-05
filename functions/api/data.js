@@ -1,4 +1,6 @@
 // functions/api/data.js
+import { getUserFromCookie } from '../_utils/auth.js';
+
 export async function onRequest(context) {
   const { request, env } = context;
   const url = new URL(request.url);
@@ -7,17 +9,21 @@ export async function onRequest(context) {
     return new Response('Not found', { status: 404 });
   }
 
+  // CORS 处理
   const origin = request.headers.get('Origin') || '';
   const allowedOrigins = ['https://yourdomain.com', 'http://localhost:8787'];
   const headers = {
     'Content-Type': 'application/json; charset=utf-8',
     'Access-Control-Allow-Methods': 'GET, PUT, PATCH, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Credentials': 'true',
   };
+
   if (allowedOrigins.includes(origin)) {
     headers['Access-Control-Allow-Origin'] = origin;
-  } else {
-    headers['Access-Control-Allow-Origin'] = allowedOrigins[0];
+  } else if (origin) {
+    // 不在白名单的请求，不返回 Allow-Origin（浏览器会拦截）
+    headers['Access-Control-Allow-Origin'] = 'null';
   }
 
   if (request.method === 'OPTIONS') {
@@ -39,7 +45,7 @@ export async function onRequest(context) {
 
   const kv = env.genealogy_management_system;
   if (!kv) {
-    return new Response(JSON.stringify({ error: 'KV 未绑定' }), { status: 500, headers });
+    return new Response(JSON.stringify({ error: '服务器配置错误' }), { status: 500, headers });
   }
 
   // 全局共享键名（所有用户共用一份族谱）
@@ -65,7 +71,6 @@ export async function onRequest(context) {
       const timestamp = now;
       const backupKey = `family-data-backup-${timestamp}`;
       await kv.put(backupKey, JSON.stringify(data));
-
       let list = [];
       const listRaw = await kv.get(backupListKey);
       if (listRaw) {
@@ -83,7 +88,7 @@ export async function onRequest(context) {
     }
   }
 
-  // ---------- 节点查找（限制在指定家族内）----------
+  // ---------- 节点查找 ----------
   function findNodeInFamily(family, id) {
     if (!family || !family.root) return null;
     return findNodeInTree(family.root, id);
@@ -115,7 +120,6 @@ export async function onRequest(context) {
     return null;
   }
 
-  // 在全量数据中查找成员
   function findMemberByName(data, name) {
     if (!data || !data.families) return null;
     for (const fam of data.families) {
@@ -145,35 +149,14 @@ export async function onRequest(context) {
     }
   }
 
-  // 获取编辑用户有权编辑的节点ID集合
-  function getEditableNodeIds(data, username) {
-    const editable = new Set();
-    if (!data || !data.families) return editable;
-    for (const fam of data.families) {
-      const member = findMemberInTree(fam.root, username);
-      if (member) {
-        editable.add(member.id);
-        addDescendants(member, editable);
-        const parent = findParentInTree(fam.root, member.id);
-        if (parent && !parent.isRoot) {
-          editable.add(parent.id);
-        }
-        break;
-      }
-    }
-    return editable;
-  }
-
   // 权限校验
   function checkPermission(data, username, role, action, payload) {
     if (role === 'admin') return true;
     if (role === 'viewer') return false;
-
     if (role === 'editor') {
       if (['addFamily', 'deleteFamily', 'renameFamily', 'setFamilyPreface'].includes(action)) {
         return false;
       }
-
       if (payload.familyId) {
         const family = data.families.find(f => f.id === payload.familyId);
         if (!family) return false;
@@ -186,7 +169,6 @@ export async function onRequest(context) {
         if (parent && !parent.isRoot) {
           editableIds.add(parent.id);
         }
-
         switch (action) {
           case 'addChild':
           case 'reorderChildren':
@@ -213,17 +195,15 @@ export async function onRequest(context) {
   // 应用操作
   function applyOperation(rootData, op, username, role) {
     const { action, payload } = op;
-
     if (!checkPermission(rootData, username, role, action, payload)) {
       throw new Error('权限不足');
     }
-
     switch (action) {
       case 'addChild': {
         const family = rootData.families.find(f => f.id === payload.familyId);
         if (!family) throw new Error('家族不存在');
         const parent = findNodeInFamily(family, payload.parentId);
-        if (!parent) throw new Error(`父节点 ${payload.parentId} 不存在`);
+        if (!parent) throw new Error('父节点不存在');
         if (!parent.children) parent.children = [];
         parent.children.push(payload.node);
         break;
@@ -232,7 +212,7 @@ export async function onRequest(context) {
         const family = rootData.families.find(f => f.id === payload.familyId);
         if (!family) throw new Error('家族不存在');
         const parent = findParentInFamily(family, payload.memberId);
-        if (!parent) throw new Error(`要删除的成员 ${payload.memberId} 的父节点不存在`);
+        if (!parent) throw new Error('要删除的成员的父节点不存在');
         const idx = parent.children.findIndex(c => c.id === payload.memberId);
         if (idx === -1) throw new Error('成员不在父节点中');
         parent.children.splice(idx, 1);
@@ -242,7 +222,7 @@ export async function onRequest(context) {
         const family = rootData.families.find(f => f.id === payload.familyId);
         if (!family) throw new Error('家族不存在');
         const node = findNodeInFamily(family, payload.memberId);
-        if (!node) throw new Error(`成员 ${payload.memberId} 不存在`);
+        if (!node) throw new Error('成员不存在');
         if (!node.attributes) node.attributes = [];
         const existing = node.attributes.find(a => a.name === payload.attrName);
         if (existing) existing.value = payload.value;
@@ -253,7 +233,7 @@ export async function onRequest(context) {
         const family = rootData.families.find(f => f.id === payload.familyId);
         if (!family) throw new Error('家族不存在');
         const node = findNodeInFamily(family, payload.memberId);
-        if (!node) throw new Error(`成员 ${payload.memberId} 不存在`);
+        if (!node) throw new Error('成员不存在');
         node.name = payload.newName;
         break;
       }
@@ -261,7 +241,7 @@ export async function onRequest(context) {
         const family = rootData.families.find(f => f.id === payload.familyId);
         if (!family) throw new Error('家族不存在');
         const node = findNodeInFamily(family, payload.memberId);
-        if (!node) throw new Error(`成员 ${payload.memberId} 不存在`);
+        if (!node) throw new Error('成员不存在');
         if (node.attributes) {
           node.attributes = node.attributes.filter(a => a.name !== payload.attrName);
         }
@@ -273,19 +253,19 @@ export async function onRequest(context) {
       }
       case 'deleteFamily': {
         const idx = rootData.families.findIndex(f => f.id === payload.familyId);
-        if (idx === -1) throw new Error(`家族 ${payload.familyId} 不存在`);
+        if (idx === -1) throw new Error('家族不存在');
         rootData.families.splice(idx, 1);
         break;
       }
       case 'renameFamily': {
         const fam = rootData.families.find(f => f.id === payload.familyId);
-        if (!fam) throw new Error(`家族 ${payload.familyId} 不存在`);
+        if (!fam) throw new Error('家族不存在');
         fam.name = payload.newName;
         break;
       }
       case 'setFamilyPreface': {
         const fam = rootData.families.find(f => f.id === payload.familyId);
-        if (!fam) throw new Error(`家族 ${payload.familyId} 不存在`);
+        if (!fam) throw new Error('家族不存在');
         fam.preface = payload.preface;
         break;
       }
@@ -293,25 +273,24 @@ export async function onRequest(context) {
         const family = rootData.families.find(f => f.id === payload.familyId);
         if (!family) throw new Error('家族不存在');
         const parent = findNodeInFamily(family, payload.parentId);
-        if (!parent || !parent.children) throw new Error(`父节点 ${payload.parentId} 不存在或无子节点`);
+        if (!parent || !parent.children) throw new Error('父节点不存在或无子节点');
         const reordered = [];
         for (const id of payload.newOrder) {
           const child = parent.children.find(c => c.id === id);
-          if (!child) throw new Error(`子节点 ${id} 不在父节点中`);
+          if (!child) throw new Error('子节点不在父节点中');
           reordered.push(child);
         }
         parent.children = reordered;
         break;
       }
       default:
-        throw new Error(`未知操作: ${action}`);
+        throw new Error('未知操作');
     }
   }
 
   // ========== GET ==========
   if (request.method === 'GET') {
     const action = url.searchParams.get('action');
-
     if (action === 'list_backups') {
       if (role !== 'admin') {
         return new Response(JSON.stringify({ error: '权限不足' }), { status: 403, headers });
@@ -321,11 +300,21 @@ export async function onRequest(context) {
       return new Response(JSON.stringify({ backups: list }), { headers });
     }
 
+    // 获取当前数据版本（用于轮询检查更新）
+    if (action === 'version') {
+      const current = await getCurrentData();
+      if (current) {
+        return new Response(JSON.stringify({ version: current._version || 0 }), { headers });
+      } else {
+        return new Response(JSON.stringify({ version: 0 }), { headers });
+      }
+    }
+
     const current = await getCurrentData();
     if (current) {
       return new Response(JSON.stringify(current), { headers });
     } else {
-      return new Response(JSON.stringify({ error: 'No data yet' }), { status: 404, headers });
+      return new Response(JSON.stringify({ error: '暂无数据' }), { status: 404, headers });
     }
   }
 
@@ -340,18 +329,15 @@ export async function onRequest(context) {
       if (!backupKey) {
         return new Response(JSON.stringify({ error: '缺少备份键' }), { status: 400, headers });
       }
-
       const listRaw = await kv.get(backupListKey);
       const list = listRaw ? JSON.parse(listRaw) : [];
       if (!list.some(b => b.key === backupKey)) {
         return new Response(JSON.stringify({ error: '备份不存在' }), { status: 404, headers });
       }
-
       const backupData = await kv.get(backupKey);
       if (!backupData) {
         return new Response(JSON.stringify({ error: '备份数据丢失' }), { status: 404, headers });
       }
-
       const current = await getCurrentData();
       if (current) {
         const autoBackupKey = `family-data-backup-${Date.now()}`;
@@ -363,11 +349,10 @@ export async function onRequest(context) {
         if (list2.length > 10) list2.shift();
         await kv.put(backupListKey, JSON.stringify(list2));
       }
-
       await kv.put(kvKey, backupData);
       return new Response(JSON.stringify({ success: true, message: '数据已恢复' }), { headers });
     } catch (err) {
-      return new Response(JSON.stringify({ error: err.message }), { status: 400, headers });
+      return new Response(JSON.stringify({ error: '恢复失败' }), { status: 400, headers });
     }
   }
 
@@ -394,7 +379,7 @@ export async function onRequest(context) {
       context.waitUntil(tryBackup(body, context));
       return new Response(JSON.stringify({ success: true, version: body._version }), { headers });
     } catch (err) {
-      return new Response(JSON.stringify({ error: err.message }), { status: 400, headers });
+      return new Response(JSON.stringify({ error: '保存失败' }), { status: 400, headers });
     }
   }
 
@@ -412,8 +397,8 @@ export async function onRequest(context) {
       if (!current) {
         current = { families: [], _version: 0 };
       }
-
       const serverVersion = current._version || 0;
+
       // 乐观锁检查：客户端必须基于最新的服务端版本提交操作
       if (baseVersion !== serverVersion) {
         return new Response(JSON.stringify({
@@ -423,9 +408,8 @@ export async function onRequest(context) {
         }), { status: 409, headers });
       }
 
-      // 在副本上执行操作（事务性）
+      // 在副本上执行操作（事务性：任一操作失败则全部回滚）
       const tempData = JSON.parse(JSON.stringify(current));
-
       for (const op of operations) {
         applyOperation(tempData, op, username, role);
       }
@@ -437,62 +421,12 @@ export async function onRequest(context) {
 
       return new Response(JSON.stringify({ success: true, version: tempData._version }), { headers });
     } catch (err) {
-      return new Response(JSON.stringify({ error: err.message }), { status: 409, headers });
+      const message = err.message === '权限不足' ? '权限不足' :
+                      err.message === '未知操作' ? '未知操作' :
+                      '操作失败';
+      return new Response(JSON.stringify({ error: message }), { status: 409, headers });
     }
   }
 
   return new Response('Method not allowed', { status: 405, headers });
-}
-
-// ---------- JWT 工具函数 ----------
-async function getUserFromCookie(request, secret) {
-  const cookie = request.headers.get('Cookie') || '';
-  const tokenMatch = cookie.match(/token=([^;]+)/);
-  if (!tokenMatch) return null;
-  try {
-    const { payload } = await verifyToken(tokenMatch[1], secret);
-    return payload;
-  } catch {
-    return null;
-  }
-}
-
-async function verifyToken(token, secret) {
-  const encoder = new TextEncoder();
-  const parts = token.split('.');
-  if (parts.length !== 3) throw new Error('Invalid token format');
-
-  const [headerB64, payloadB64, signatureB64] = parts;
-  const signature = base64UrlDecode(signatureB64);
-  const data = encoder.encode(`${headerB64}.${payloadB64}`);
-
-  const key = await crypto.subtle.importKey(
-    'raw',
-    encoder.encode(secret),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['verify']
-  );
-  const valid = await crypto.subtle.verify('HMAC', key, signature, data);
-  if (!valid) throw new Error('Signature invalid');
-
-  const payloadBytes = base64UrlDecode(payloadB64);
-  const payloadText = new TextDecoder().decode(payloadBytes);
-  const payload = JSON.parse(payloadText);
-
-  if (payload.exp && payload.exp < Date.now() / 1000) throw new Error('Token expired');
-  return { payload };
-}
-
-function base64UrlDecode(str) {
-  let base64 = str.replace(/-/g, '+').replace(/_/g, '/');
-  while (base64.length % 4) {
-    base64 += '=';
-  }
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return bytes;
 }
