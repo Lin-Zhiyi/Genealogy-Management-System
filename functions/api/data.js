@@ -1,4 +1,3 @@
-// functions/api/data.js
 import { getUserFromCookie } from '../_utils/auth.js';
 
 export async function onRequest(context) {
@@ -9,12 +8,12 @@ export async function onRequest(context) {
     return new Response('Not found', { status: 404 });
   }
 
-  // CORS 头
+  // CORS 配置（已改为实际域名）
   const origin = request.headers.get('Origin') || '';
-  const allowedOrigins = ['https://yourdomain.com', 'http://localhost:8787'];
+  const allowedOrigins = ['https://linshizupu.pages.dev', 'http://localhost:8787'];
   const headers = {
     'Content-Type': 'application/json; charset=utf-8',
-    'Access-Control-Allow-Methods': 'GET, PUT, PATCH, OPTIONS',
+    'Access-Control-Allow-Methods': 'GET, PUT, PATCH, POST, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type',
     'Access-Control-Allow-Credentials': 'true',
   };
@@ -27,7 +26,7 @@ export async function onRequest(context) {
     return new Response(null, { headers });
   }
 
-  // 获取当前用户
+  // 认证
   let username, role;
   try {
     const tokenPayload = await getUserFromCookie(request, env.JWT_SECRET);
@@ -40,11 +39,11 @@ export async function onRequest(context) {
     return new Response(JSON.stringify({ error: '认证失败' }), { status: 401, headers });
   }
 
-  // KV 绑定检查
+  // KV 绑定（保持原名称）
   const kv = env.genealogy_management_system;
   if (!kv) {
-    console.error('KV 绑定 "genealogy_management_system" 未配置');
-    return new Response(JSON.stringify({ error: '服务器配置错误' }), { status: 500, headers });
+    console.error('KV 命名空间未绑定：genealogy_management_system');
+    return new Response(JSON.stringify({ error: '服务器配置错误：未找到数据存储' }), { status: 500, headers });
   }
 
   const kvKey = 'family-data';
@@ -52,15 +51,15 @@ export async function onRequest(context) {
   const backupLastTimeKey = 'family-data-backup-lasttime';
   const BACKUP_INTERVAL_MS = 5 * 60 * 1000;
 
-  // ---------- 数据读取 ----------
+  // ---------- 数据读取工具 ----------
   async function getCurrentData() {
     try {
       const raw = await kv.get(kvKey);
-      if (!raw) return null;
+      if (!raw) return { families: [], _version: 0 };  // 空数据初始化
       return JSON.parse(raw);
     } catch (e) {
       console.error('getCurrentData 解析失败:', e);
-      throw new Error('数据解析失败');
+      throw new Error('数据损坏');
     }
   }
 
@@ -289,7 +288,9 @@ export async function onRequest(context) {
     }
   }
 
-  // ========== GET ==========
+  // ========== 路由处理 ==========
+
+  // GET 请求
   if (request.method === 'GET') {
     const action = url.searchParams.get('action');
 
@@ -302,7 +303,6 @@ export async function onRequest(context) {
         const list = listRaw ? JSON.parse(listRaw) : [];
         return new Response(JSON.stringify({ backups: list }), { headers });
       } catch (e) {
-        console.error('list_backups 错误:', e);
         return new Response(JSON.stringify({ error: '获取备份列表失败' }), { status: 500, headers });
       }
     }
@@ -310,28 +310,22 @@ export async function onRequest(context) {
     if (action === 'version') {
       try {
         const current = await getCurrentData();
-        const version = current ? current._version || 0 : 0;
-        return new Response(JSON.stringify({ version }), { headers });
+        return new Response(JSON.stringify({ version: current._version || 0 }), { headers });
       } catch (e) {
-        console.error('version 错误:', e);
         return new Response(JSON.stringify({ error: '读取版本失败' }), { status: 500, headers });
       }
     }
 
+    // 默认返回完整数据（空数据时返回初始结构）
     try {
       const current = await getCurrentData();
-      if (current) {
-        return new Response(JSON.stringify(current), { headers });
-      } else {
-        return new Response(JSON.stringify({ error: '暂无数据' }), { status: 404, headers });
-      }
+      return new Response(JSON.stringify(current), { headers });
     } catch (e) {
-      console.error('GET /api/data 错误:', e);
-      return new Response(JSON.stringify({ error: '数据读取失败，请检查 KV 数据完整性' }), { status: 500, headers });
+      return new Response(JSON.stringify({ error: '数据读取失败' }), { status: 500, headers });
     }
   }
 
-  // ========== POST 恢复 ==========
+  // POST 恢复备份
   if (request.method === 'POST' && url.searchParams.get('action') === 'restore') {
     if (role !== 'admin') {
       return new Response(JSON.stringify({ error: '权限不足' }), { status: 403, headers });
@@ -351,8 +345,9 @@ export async function onRequest(context) {
       if (!backupData) {
         return new Response(JSON.stringify({ error: '备份数据丢失' }), { status: 404, headers });
       }
+      // 恢复前自动备份当前数据
       const current = await getCurrentData();
-      if (current) {
+      if (current && current.families && current.families.length > 0) {
         const autoBackupKey = `family-data-backup-${Date.now()}`;
         await kv.put(autoBackupKey, JSON.stringify(current));
         let list2 = [];
@@ -366,58 +361,22 @@ export async function onRequest(context) {
       console.log(`管理员 ${username} 恢复了备份: ${backupKey}`);
       return new Response(JSON.stringify({ success: true, message: '数据已恢复' }), { headers });
     } catch (err) {
-      console.error('restore 错误:', err);
       return new Response(JSON.stringify({ error: '恢复失败' }), { status: 400, headers });
     }
   }
 
-  // ========== PUT ==========
-  if (request.method === 'PUT') {
-    if (role !== 'admin') {
-      return new Response(JSON.stringify({ error: '权限不足' }), { status: 403, headers });
-    }
-    try {
-      const body = await request.json();
-      if (!body.families || !Array.isArray(body.families)) throw new Error('数据格式错误');
-      const current = await getCurrentData();
-      const clientVersion = body._version || 0;
-      const serverVersion = current ? (current._version || 0) : 0;
-      if (clientVersion < serverVersion && !body._forceOverwrite) {
-        return new Response(JSON.stringify({
-          error: '版本冲突',
-          latestVersion: serverVersion,
-          latestData: current
-        }), { status: 409, headers });
-      }
-      body._version = Math.max(clientVersion, serverVersion) + 1;
-      await saveData(body);
-      context.waitUntil(tryBackup(body, context));
-      console.log(`管理员 ${username} 全量覆盖数据，新版本: ${body._version}`);
-      return new Response(JSON.stringify({ success: true, version: body._version }), { headers });
-    } catch (err) {
-      console.error('PUT 错误:', err);
-      return new Response(JSON.stringify({ error: '保存失败' }), { status: 400, headers });
-    }
-  }
-
-  // ========== PATCH ==========
-  if (request.method === 'PATCH') {
+  // POST 同步操作（兼容 keepalive）
+  if (request.method === 'POST' && !url.searchParams.get('action')) {
     try {
       const body = await request.json();
       const { operations, baseVersion } = body;
       if (!Array.isArray(operations)) throw new Error('operations 必须为数组');
-      if (typeof baseVersion !== 'number') {
-        throw new Error('缺少 baseVersion 参数');
-      }
+      if (typeof baseVersion !== 'number') throw new Error('缺少 baseVersion');
 
       let current = await getCurrentData();
-      if (!current) {
-        current = { families: [], _version: 0 };
-      }
       const serverVersion = current._version || 0;
 
       if (baseVersion !== serverVersion) {
-        console.warn(`版本冲突: 客户端 ${baseVersion}, 服务端 ${serverVersion}, 用户 ${username}`);
         return new Response(JSON.stringify({
           error: '版本冲突，请刷新重试',
           latestVersion: serverVersion,
@@ -434,13 +393,73 @@ export async function onRequest(context) {
       await saveData(tempData);
       context.waitUntil(tryBackup(tempData, context));
 
-      console.log(`PATCH 成功: 用户 ${username}, 操作数 ${operations.length}, 新版本 ${tempData._version}`);
+      console.log(`POST 同步成功: 用户 ${username}, 操作数 ${operations.length}, 新版本 ${tempData._version}`);
       return new Response(JSON.stringify({ success: true, version: tempData._version }), { headers });
     } catch (err) {
-      const message = err.message === '权限不足' ? '权限不足' :
-                      err.message === '未知操作' ? '未知操作' :
-                      '操作失败';
-      console.error('PATCH 错误:', err);
+      const message = err.message === '权限不足' ? '权限不足' : (err.message || '操作失败');
+      return new Response(JSON.stringify({ error: message }), { status: 409, headers });
+    }
+  }
+
+  // PUT 全量覆盖
+  if (request.method === 'PUT') {
+    if (role !== 'admin') {
+      return new Response(JSON.stringify({ error: '权限不足' }), { status: 403, headers });
+    }
+    try {
+      const body = await request.json();
+      if (!body.families || !Array.isArray(body.families)) throw new Error('数据格式错误');
+      const current = await getCurrentData();
+      const clientVersion = body._version || 0;
+      const serverVersion = current._version || 0;
+      if (clientVersion < serverVersion && !body._forceOverwrite) {
+        return new Response(JSON.stringify({
+          error: '版本冲突',
+          latestVersion: serverVersion,
+          latestData: current
+        }), { status: 409, headers });
+      }
+      body._version = Math.max(clientVersion, serverVersion) + 1;
+      await saveData(body);
+      context.waitUntil(tryBackup(body, context));
+      console.log(`管理员 ${username} 全量覆盖数据，新版本: ${body._version}`);
+      return new Response(JSON.stringify({ success: true, version: body._version }), { headers });
+    } catch (err) {
+      return new Response(JSON.stringify({ error: err.message || '保存失败' }), { status: 400, headers });
+    }
+  }
+
+  // PATCH 增量操作（保留兼容）
+  if (request.method === 'PATCH') {
+    try {
+      const body = await request.json();
+      const { operations, baseVersion } = body;
+      if (!Array.isArray(operations)) throw new Error('operations 必须为数组');
+      if (typeof baseVersion !== 'number') throw new Error('缺少 baseVersion');
+
+      let current = await getCurrentData();
+      const serverVersion = current._version || 0;
+
+      if (baseVersion !== serverVersion) {
+        return new Response(JSON.stringify({
+          error: '版本冲突，请刷新重试',
+          latestVersion: serverVersion,
+          latestData: current
+        }), { status: 409, headers });
+      }
+
+      const tempData = JSON.parse(JSON.stringify(current));
+      for (const op of operations) {
+        applyOperation(tempData, op, username, role);
+      }
+
+      tempData._version = serverVersion + 1;
+      await saveData(tempData);
+      context.waitUntil(tryBackup(tempData, context));
+
+      return new Response(JSON.stringify({ success: true, version: tempData._version }), { headers });
+    } catch (err) {
+      const message = err.message === '权限不足' ? '权限不足' : (err.message || '操作失败');
       return new Response(JSON.stringify({ error: message }), { status: 409, headers });
     }
   }
