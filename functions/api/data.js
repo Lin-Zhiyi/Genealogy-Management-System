@@ -1,3 +1,4 @@
+// functions/api/data.js
 import { getUserFromCookie } from '../_utils/auth.js';
 
 export async function onRequest(context) {
@@ -8,7 +9,7 @@ export async function onRequest(context) {
     return new Response('Not found', { status: 404 });
   }
 
-  // CORS 配置（已改为实际域名）
+  // CORS 配置
   const origin = request.headers.get('Origin') || '';
   const allowedOrigins = ['https://linshizupu.pages.dev', 'http://localhost:8787'];
   const headers = {
@@ -39,7 +40,7 @@ export async function onRequest(context) {
     return new Response(JSON.stringify({ error: '认证失败' }), { status: 401, headers });
   }
 
-  // KV 绑定（保持原名称）
+  // KV 绑定（保持原名）
   const kv = env.genealogy_management_system;
   if (!kv) {
     console.error('KV 命名空间未绑定：genealogy_management_system');
@@ -51,11 +52,11 @@ export async function onRequest(context) {
   const backupLastTimeKey = 'family-data-backup-lasttime';
   const BACKUP_INTERVAL_MS = 5 * 60 * 1000;
 
-  // ---------- 数据读取工具 ----------
+  // ---------- 数据读写工具 ----------
   async function getCurrentData() {
     try {
       const raw = await kv.get(kvKey);
-      if (!raw) return { families: [], _version: 0 };  // 空数据初始化
+      if (!raw) return { families: [], _version: 0 }; // 空数据初始化
       return JSON.parse(raw);
     } catch (e) {
       console.error('getCurrentData 解析失败:', e);
@@ -316,7 +317,7 @@ export async function onRequest(context) {
       }
     }
 
-    // 默认返回完整数据（空数据时返回初始结构）
+    // 默认返回完整数据（空数据返回初始结构，而非 404）
     try {
       const current = await getCurrentData();
       return new Response(JSON.stringify(current), { headers });
@@ -365,7 +366,7 @@ export async function onRequest(context) {
     }
   }
 
-  // POST 同步操作（兼容 keepalive）
+  // POST 同步操作（兼容 keepalive，逻辑同 PATCH）
   if (request.method === 'POST' && !url.searchParams.get('action')) {
     try {
       const body = await request.json();
@@ -401,7 +402,7 @@ export async function onRequest(context) {
     }
   }
 
-  // PUT 全量覆盖
+  // PUT 全量覆盖（管理员专用）
   if (request.method === 'PUT') {
     if (role !== 'admin') {
       return new Response(JSON.stringify({ error: '权限不足' }), { status: 403, headers });
@@ -457,6 +458,7 @@ export async function onRequest(context) {
       await saveData(tempData);
       context.waitUntil(tryBackup(tempData, context));
 
+      console.log(`PATCH 成功: 用户 ${username}, 操作数 ${operations.length}, 新版本 ${tempData._version}`);
       return new Response(JSON.stringify({ success: true, version: tempData._version }), { headers });
     } catch (err) {
       const message = err.message === '权限不足' ? '权限不足' : (err.message || '操作失败');
