@@ -9,7 +9,6 @@ export async function onRequest(context) {
   const { request, env } = context;
   const url = new URL(request.url);
 
-  // 验证管理员权限
   const tokenPayload = await getUserFromCookie(request, env.JWT_SECRET);
   if (!tokenPayload || tokenPayload.role !== 'admin') {
     return new Response(JSON.stringify({ error: '需要管理员权限' }), {
@@ -18,7 +17,6 @@ export async function onRequest(context) {
     });
   }
 
-  // 获取非管理员用户列表
   if (url.pathname === '/api/admin/users' && request.method === 'GET') {
     try {
       const list = await env.USER_KV.list({ prefix: 'user:' });
@@ -40,7 +38,6 @@ export async function onRequest(context) {
     }
   }
 
-  // 重置密码
   if (url.pathname === '/api/admin/reset-password' && request.method === 'POST') {
     try {
       const body = await request.json();
@@ -60,12 +57,10 @@ export async function onRequest(context) {
         return new Response(JSON.stringify({ error: '不能重置管理员密码' }), { status: 403 });
       }
 
-      // 使用 PBKDF2 重置密码
       const newPassword = '123456';
       user.password = await hashPassword(newPassword);
-      // 更新密码版本号，使旧 token 失效
       user.pwdVersion = (user.pwdVersion || 1) + 1;
-      user.mustChangePassword = true; // 标记需要改密
+      user.mustChangePassword = true;
 
       await env.USER_KV.put(key, JSON.stringify(user));
 

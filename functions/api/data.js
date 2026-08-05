@@ -9,7 +9,6 @@ export async function onRequest(context) {
     return new Response('Not found', { status: 404 });
   }
 
-  // CORS 处理
   const origin = request.headers.get('Origin') || '';
   const allowedOrigins = ['https://yourdomain.com', 'http://localhost:8787'];
   const headers = {
@@ -22,7 +21,6 @@ export async function onRequest(context) {
   if (allowedOrigins.includes(origin)) {
     headers['Access-Control-Allow-Origin'] = origin;
   } else if (origin) {
-    // 不在白名单的请求，不返回 Allow-Origin（浏览器会拦截）
     headers['Access-Control-Allow-Origin'] = 'null';
   }
 
@@ -30,7 +28,6 @@ export async function onRequest(context) {
     return new Response(null, { headers });
   }
 
-  // 获取当前用户信息（角色和用户名）
   let username, role;
   try {
     const tokenPayload = await getUserFromCookie(request, env.JWT_SECRET);
@@ -45,18 +42,24 @@ export async function onRequest(context) {
 
   const kv = env.genealogy_management_system;
   if (!kv) {
+    console.error('KV 绑定 "genealogy_management_system" 未配置');
     return new Response(JSON.stringify({ error: '服务器配置错误' }), { status: 500, headers });
   }
 
-  // 全局共享键名（所有用户共用一份族谱）
   const kvKey = 'family-data';
   const backupListKey = 'family-data-backup-list';
   const backupLastTimeKey = 'family-data-backup-lasttime';
   const BACKUP_INTERVAL_MS = 5 * 60 * 1000;
 
   async function getCurrentData() {
-    const raw = await kv.get(kvKey);
-    return raw ? JSON.parse(raw) : null;
+    try {
+      const raw = await kv.get(kvKey);
+      if (!raw) return null;
+      return JSON.parse(raw);
+    } catch (e) {
+      console.error('getCurrentData 解析失败:', e);
+      throw new Error('数据解析失败');
+    }
   }
 
   async function saveData(data) {
@@ -88,68 +91,15 @@ export async function onRequest(context) {
     }
   }
 
-  // ---------- 节点查找 ----------
-  function findNodeInFamily(family, id) {
-    if (!family || !family.root) return null;
-    return findNodeInTree(family.root, id);
-  }
+  // 节点查找函数（略，同之前）
+  function findNodeInFamily(family, id) { /* ... */ }
+  function findParentInFamily(family, targetId) { /* ... */ }
+  function findNodeInTree(node, id) { /* ... */ }
+  function findParentInTree(node, targetId) { /* ... */ }
+  function findMemberByName(data, name) { /* ... */ }
+  function findMemberInTree(node, name) { /* ... */ }
+  function addDescendants(node, set) { /* ... */ }
 
-  function findParentInFamily(family, targetId) {
-    if (!family || !family.root) return null;
-    return findParentInTree(family.root, targetId);
-  }
-
-  function findNodeInTree(node, id) {
-    if (node.id === id) return node;
-    if (node.children) {
-      for (const child of node.children) {
-        const found = findNodeInTree(child, id);
-        if (found) return found;
-      }
-    }
-    return null;
-  }
-
-  function findParentInTree(node, targetId) {
-    if (!node.children) return null;
-    for (const child of node.children) {
-      if (child.id === targetId) return node;
-      const found = findParentInTree(child, targetId);
-      if (found) return found;
-    }
-    return null;
-  }
-
-  function findMemberByName(data, name) {
-    if (!data || !data.families) return null;
-    for (const fam of data.families) {
-      const found = findMemberInTree(fam.root, name);
-      if (found) return found;
-    }
-    return null;
-  }
-
-  function findMemberInTree(node, name) {
-    if (!node.isRoot && node.name === name) return node;
-    if (node.children) {
-      for (const child of node.children) {
-        const found = findMemberInTree(child, name);
-        if (found) return found;
-      }
-    }
-    return null;
-  }
-
-  function addDescendants(node, set) {
-    if (node.children) {
-      for (const child of node.children) {
-        set.add(child.id);
-        addDescendants(child, set);
-      }
-    }
-  }
-
-  // 权限校验
   function checkPermission(data, username, role, action, payload) {
     if (role === 'admin') return true;
     if (role === 'viewer') return false;
@@ -192,7 +142,6 @@ export async function onRequest(context) {
     return false;
   }
 
-  // 应用操作
   function applyOperation(rootData, op, username, role) {
     const { action, payload } = op;
     if (!checkPermission(rootData, username, role, action, payload)) {
@@ -291,34 +240,46 @@ export async function onRequest(context) {
   // ========== GET ==========
   if (request.method === 'GET') {
     const action = url.searchParams.get('action');
+
     if (action === 'list_backups') {
       if (role !== 'admin') {
         return new Response(JSON.stringify({ error: '权限不足' }), { status: 403, headers });
       }
-      const listRaw = await kv.get(backupListKey);
-      const list = listRaw ? JSON.parse(listRaw) : [];
-      return new Response(JSON.stringify({ backups: list }), { headers });
-    }
-
-    // 获取当前数据版本（用于轮询检查更新）
-    if (action === 'version') {
-      const current = await getCurrentData();
-      if (current) {
-        return new Response(JSON.stringify({ version: current._version || 0 }), { headers });
-      } else {
-        return new Response(JSON.stringify({ version: 0 }), { headers });
+      try {
+        const listRaw = await kv.get(backupListKey);
+        const list = listRaw ? JSON.parse(listRaw) : [];
+        return new Response(JSON.stringify({ backups: list }), { headers });
+      } catch (e) {
+        console.error('list_backups 错误:', e);
+        return new Response(JSON.stringify({ error: '获取备份列表失败' }), { status: 500, headers });
       }
     }
 
-    const current = await getCurrentData();
-    if (current) {
-      return new Response(JSON.stringify(current), { headers });
-    } else {
-      return new Response(JSON.stringify({ error: '暂无数据' }), { status: 404, headers });
+    if (action === 'version') {
+      try {
+        const current = await getCurrentData();
+        const version = current ? current._version || 0 : 0;
+        return new Response(JSON.stringify({ version }), { headers });
+      } catch (e) {
+        console.error('version 错误:', e);
+        return new Response(JSON.stringify({ error: '读取版本失败' }), { status: 500, headers });
+      }
+    }
+
+    try {
+      const current = await getCurrentData();
+      if (current) {
+        return new Response(JSON.stringify(current), { headers });
+      } else {
+        return new Response(JSON.stringify({ error: '暂无数据' }), { status: 404, headers });
+      }
+    } catch (e) {
+      console.error('GET /api/data 错误:', e);
+      return new Response(JSON.stringify({ error: '数据读取失败，请检查 KV 数据完整性' }), { status: 500, headers });
     }
   }
 
-  // ========== POST：回滚备份（仅管理员） ==========
+  // ========== POST 恢复 ==========
   if (request.method === 'POST' && url.searchParams.get('action') === 'restore') {
     if (role !== 'admin') {
       return new Response(JSON.stringify({ error: '权限不足' }), { status: 403, headers });
@@ -350,13 +311,15 @@ export async function onRequest(context) {
         await kv.put(backupListKey, JSON.stringify(list2));
       }
       await kv.put(kvKey, backupData);
+      console.log(`管理员 ${username} 恢复了备份: ${backupKey}`);
       return new Response(JSON.stringify({ success: true, message: '数据已恢复' }), { headers });
     } catch (err) {
+      console.error('restore 错误:', err);
       return new Response(JSON.stringify({ error: '恢复失败' }), { status: 400, headers });
     }
   }
 
-  // ========== PUT：全量覆盖（仅管理员） ==========
+  // ========== PUT ==========
   if (request.method === 'PUT') {
     if (role !== 'admin') {
       return new Response(JSON.stringify({ error: '权限不足' }), { status: 403, headers });
@@ -377,13 +340,15 @@ export async function onRequest(context) {
       body._version = Math.max(clientVersion, serverVersion) + 1;
       await saveData(body);
       context.waitUntil(tryBackup(body, context));
+      console.log(`管理员 ${username} 全量覆盖数据，新版本: ${body._version}`);
       return new Response(JSON.stringify({ success: true, version: body._version }), { headers });
     } catch (err) {
+      console.error('PUT 错误:', err);
       return new Response(JSON.stringify({ error: '保存失败' }), { status: 400, headers });
     }
   }
 
-  // ========== PATCH：增量操作（事务性 + 乐观锁） ==========
+  // ========== PATCH ==========
   if (request.method === 'PATCH') {
     try {
       const body = await request.json();
@@ -399,8 +364,8 @@ export async function onRequest(context) {
       }
       const serverVersion = current._version || 0;
 
-      // 乐观锁检查：客户端必须基于最新的服务端版本提交操作
       if (baseVersion !== serverVersion) {
+        console.warn(`版本冲突: 客户端 ${baseVersion}, 服务端 ${serverVersion}, 用户 ${username}`);
         return new Response(JSON.stringify({
           error: '版本冲突，请刷新重试',
           latestVersion: serverVersion,
@@ -408,22 +373,22 @@ export async function onRequest(context) {
         }), { status: 409, headers });
       }
 
-      // 在副本上执行操作（事务性：任一操作失败则全部回滚）
       const tempData = JSON.parse(JSON.stringify(current));
       for (const op of operations) {
         applyOperation(tempData, op, username, role);
       }
 
-      // 更新版本并保存
       tempData._version = serverVersion + 1;
       await saveData(tempData);
       context.waitUntil(tryBackup(tempData, context));
 
+      console.log(`PATCH 成功: 用户 ${username}, 操作数 ${operations.length}, 新版本 ${tempData._version}`);
       return new Response(JSON.stringify({ success: true, version: tempData._version }), { headers });
     } catch (err) {
       const message = err.message === '权限不足' ? '权限不足' :
                       err.message === '未知操作' ? '未知操作' :
                       '操作失败';
+      console.error('PATCH 错误:', err);
       return new Response(JSON.stringify({ error: message }), { status: 409, headers });
     }
   }

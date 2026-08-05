@@ -11,13 +11,12 @@ import {
 export async function onRequestPost(context) {
   const { request, env } = context;
 
-  // 速率限制（基于 KV，支持多实例）
   const clientIP = request.headers.get('CF-Connecting-IP') || request.headers.get('X-Forwarded-For') || 'unknown';
   const rateLimitResult = await checkRateLimit(
     env.USER_KV,
     `ratelimit:login:${clientIP}`,
-    10,        // 每分钟最多 10 次
-    60 * 1000  // 60 秒窗口
+    10,
+    60 * 1000
   );
   if (!rateLimitResult.allowed) {
     return new Response(JSON.stringify({ error: '请求过于频繁，请稍后再试' }), {
@@ -26,7 +25,6 @@ export async function onRequestPost(context) {
     });
   }
 
-  // 检查环境变量
   if (!env.JWT_SECRET || env.JWT_SECRET.length < 16) {
     return new Response(JSON.stringify({ error: '服务器配置错误' }), {
       status: 500,
@@ -34,7 +32,6 @@ export async function onRequestPost(context) {
     });
   }
 
-  // 解析请求体
   let body;
   try {
     body = await request.json();
@@ -53,7 +50,6 @@ export async function onRequestPost(context) {
     });
   }
 
-  // 输入验证
   if (typeof username !== 'string' || typeof password !== 'string') {
     return new Response(JSON.stringify({ error: '字段类型错误' }), {
       status: 400,
@@ -73,7 +69,6 @@ export async function onRequestPost(context) {
     });
   }
 
-  // 从 KV 读取用户数据
   let userData;
   try {
     userData = await env.USER_KV.get(`user:${username}`);
@@ -91,7 +86,6 @@ export async function onRequestPost(context) {
     });
   }
 
-  // 解析用户数据
   let user;
   try {
     user = JSON.parse(userData);
@@ -102,7 +96,6 @@ export async function onRequestPost(context) {
     });
   }
 
-  // 验证密码（兼容旧 SHA-512 格式和新 PBKDF2 格式）
   let passwordValid = false;
   try {
     passwordValid = await verifyPassword(password, user.password);
@@ -120,19 +113,16 @@ export async function onRequestPost(context) {
     });
   }
 
-  // 如果是旧格式密码，自动升级为 PBKDF2
   if (!user.password.startsWith('pbkdf2:')) {
     try {
       const newHash = await hashPassword(password);
       user.password = newHash;
       await env.USER_KV.put(`user:${username}`, JSON.stringify(user));
     } catch (e) {
-      // 升级失败不影响登录
       console.warn('密码升级失败:', e.message);
     }
   }
 
-  // 确保用户有密码版本号
   if (user.pwdVersion === undefined) {
     user.pwdVersion = 1;
     try {
@@ -140,7 +130,6 @@ export async function onRequestPost(context) {
     } catch (e) {}
   }
 
-  // 生成 JWT（包含角色和密码版本号）
   let token;
   try {
     token = await generateToken(

@@ -17,7 +17,6 @@ export async function onRequestGet(context) {
   try {
     const { payload } = await verifyToken(token, env.JWT_SECRET);
 
-    // 滑动续期：如果剩余时间小于 12 小时，重新签发 token
     const now = Math.floor(Date.now() / 1000);
     const remaining = payload.exp - now;
     const headers = { 'Content-Type': 'application/json; charset=utf-8' };

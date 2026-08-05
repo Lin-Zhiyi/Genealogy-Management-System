@@ -9,13 +9,12 @@ import {
 export async function onRequestPost(context) {
   const { request, env } = context;
 
-  // 速率限制（基于 KV，支持多实例）
   const clientIP = request.headers.get('CF-Connecting-IP') || request.headers.get('X-Forwarded-For') || 'unknown';
   const rateLimitResult = await checkRateLimit(
     env.USER_KV,
     `ratelimit:register:${clientIP}`,
-    5,         // 每分钟最多 5 次
-    60 * 1000  // 60 秒窗口
+    5,
+    60 * 1000
   );
   if (!rateLimitResult.allowed) {
     return new Response(JSON.stringify({ error: '请求过于频繁，请稍后再试' }), {
@@ -42,7 +41,6 @@ export async function onRequestPost(context) {
     });
   }
 
-  // 输入验证
   if (typeof username !== 'string' || typeof password !== 'string' || typeof adminPassword !== 'string') {
     return new Response(JSON.stringify({ error: '字段类型错误' }), {
       status: 400,
@@ -68,7 +66,6 @@ export async function onRequestPost(context) {
     });
   }
 
-  // 禁止注册 admin 用户名
   if (username === 'admin') {
     return new Response(JSON.stringify({ error: '不能注册管理员账号' }), {
       status: 403,
@@ -76,7 +73,6 @@ export async function onRequestPost(context) {
     });
   }
 
-  // 验证管理员密码
   let adminData;
   try {
     adminData = await env.USER_KV.get('user:admin');
@@ -118,7 +114,6 @@ export async function onRequestPost(context) {
     });
   }
 
-  // 检查用户名是否已存在
   let existing;
   try {
     existing = await env.USER_KV.get(`user:${username}`);
@@ -135,7 +130,6 @@ export async function onRequestPost(context) {
     });
   }
 
-  // 决定角色：编辑用户（editor）还是浏览用户（viewer）
   let role = 'viewer';
   try {
     const familyData = await env.genealogy_management_system.get('family-data');
@@ -150,11 +144,8 @@ export async function onRequestPost(context) {
         }
       }
     }
-  } catch (e) {
-    // 读取族谱数据失败，默认设为 viewer
-  }
+  } catch (e) {}
 
-  // 使用 PBKDF2 生成密码哈希
   const hashedPassword = await hashPassword(password);
 
   const user = {
@@ -180,7 +171,6 @@ export async function onRequestPost(context) {
   });
 }
 
-// ---------- 工具函数 ----------
 function memberNameExists(node, name) {
   if (!node.isRoot && node.name === name) return true;
   if (node.children) {

@@ -1,7 +1,4 @@
 // functions/_utils/auth.js
-// 公共认证工具模块：JWT、密码哈希、CSRF、限流
-
-// ========== JWT ==========
 export async function generateToken(payload, secret, expiresIn = '24h') {
   const header = { alg: 'HS256', typ: 'JWT' };
   const now = Math.floor(Date.now() / 1000);
@@ -53,7 +50,6 @@ export async function getUserFromCookie(request, secret) {
   }
 }
 
-// ========== 密码哈希（PBKDF2，替代 SHA-512）==========
 export async function hashPassword(password, salt) {
   if (!salt) salt = generateSalt();
   const encoder = new TextEncoder();
@@ -70,7 +66,7 @@ export async function hashPassword(password, salt) {
       hash: 'SHA-256'
     },
     keyMaterial,
-    256 // 256 bits = 32 bytes
+    256
   );
   const hashArray = Array.from(new Uint8Array(derivedBits));
   const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
@@ -79,13 +75,11 @@ export async function hashPassword(password, salt) {
 
 export async function verifyPassword(password, storedPassword) {
   const parts = storedPassword.split(':');
-  // 兼容旧的 SHA-512 格式（salt:hash）
   if (parts.length === 2) {
     const [salt, storedHash] = parts;
     const legacyHash = await sha512(salt + password);
     return legacyHash === storedHash;
   }
-  // 新的 PBKDF2 格式（pbkdf2:salt:hash）
   if (parts.length === 3 && parts[0] === 'pbkdf2') {
     const [, salt, storedHash] = parts;
     const newHash = await hashPassword(password, salt);
@@ -101,7 +95,6 @@ export function generateSalt() {
   return Array.from(array, byte => byte.toString(16).padStart(2, '0')).join('');
 }
 
-// 旧的 SHA-512（仅用于兼容旧密码验证）
 async function sha512(message) {
   const encoder = new TextEncoder();
   const data = encoder.encode(message);
@@ -109,7 +102,6 @@ async function sha512(message) {
   return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
-// ========== CSRF Token ==========
 export function generateCsrfToken() {
   const array = new Uint8Array(32);
   crypto.getRandomValues(array);
@@ -121,7 +113,6 @@ export function verifyCsrfToken(request, expectedToken) {
   return token === expectedToken && token.length > 0;
 }
 
-// ========== 速率限制（基于 KV，支持多实例）==========
 export async function checkRateLimit(kv, key, maxRequests, windowMs) {
   const now = Date.now();
   const windowKey = `${key}:${Math.floor(now / windowMs)}`;
@@ -134,7 +125,6 @@ export async function checkRateLimit(kv, key, maxRequests, windowMs) {
   return { allowed: true, remaining: maxRequests - count - 1 };
 }
 
-// ========== Token 黑名单（登出/改密后失效）==========
 export async function addToBlacklist(kv, token, expSeconds) {
   const tokenHash = await sha256(token);
   const ttl = Math.max(60, expSeconds - Math.floor(Date.now() / 1000));
@@ -154,7 +144,6 @@ async function sha256(message) {
   return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
-// ========== Base64 URL ==========
 export function base64UrlEncode(buffer) {
   const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
   let binary = '';
