@@ -4,7 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes, viewport-fit=cover">
   <title>源锦族谱管理系统</title>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js">
+  </script>
   <style>
     :root {
       --bg-menu: #f2f2f2;
@@ -370,7 +371,7 @@
   <div class="status-bar">
     <span>📍 代际：</span><span class="status-path" id="statusPath">族谱管理系统</span>
     <span class="status-count" id="statusCount">共 0 位成员</span>
-    <span id="syncStatusIndicator" style="margin-left:auto;">💾 本地存储</span>
+    <span id="syncStatusIndicator" style="margin-left:auto;">☁️ 同步中...</span>
   </div>
   <div class="copyright-bar">
     <span>版权所有©2026 林及第</span><span>|</span><span>联系方式：ld-1212@163.com</span>
@@ -386,11 +387,8 @@
 
 <script>
 (function() {
-  // 系统配置
   const STORAGE_KEY = 'jiumu_family_multi_v3';
-  const LOCAL_USER_KEY = 'jiumu_local_user';
-  
-  // 应用状态
+  const CLOUD_API_URL = '/api/data';
   let appData = { families: [], currentFamilyId: null };
   let selectedNodeId = null;
   let expandedNodeIds = new Set();
@@ -401,84 +399,59 @@
   let undoStack = [];
   let pendingDeleteAllData = null;
   let autoFitEnabled = false;
-  let pendingOperations = [];
-  let isUserEditing = false;
-  let currentUserRole = 'admin'; // 默认为管理员（本地模式）
-  let syncTimer = null;
 
-  // 移动端检测
+  let pendingOperations = [];
+  let baseVersion = 0;
+  let syncTimer = null;
+  let isUserEditing = false;
+  let currentUserRole = 'viewer';
+  let syncRetryCount = 0;
+  let syncMaxRetries = 5;
+  let autoSyncTimer = null;
+  let isSyncing = false;
+  let lastSyncStatus = 'idle';
+  let syncConflictRetries = 0;
+  const MAX_CONFLICT_RETRIES = 3;
+
   if (/Mobi|Android/i.test(navigator.userAgent)) document.body.classList.add('mobile-layout');
 
-  // ==================== 本地认证模拟 ====================
-  function initLocalAuth() {
-    // 尝试从 sessionStorage 获取缓存用户
-    const cached = sessionStorage.getItem('cached_user');
-    if (cached) {
-      const u = JSON.parse(cached);
-      currentUserRole = u.role || 'admin';
-      document.getElementById('usernameDisplay').textContent = `${u.username} (${currentUserRole === 'admin' ? '管理员' : '编辑用户'})`;
-      return;
+  function isNetworkError(err) {
+    return err instanceof TypeError && (err.message === 'Failed to fetch' || err.message === 'NetworkError when attempting to fetch resource.');
+  }
+
+  async function checkAuth() {
+    try {
+      const res = await fetch('/api/auth/me');
+      if (!res.ok) {
+        window.location.href = '/login.html';
+        return false;
+      }
+      const u = await res.json();
+      currentUserRole = u.role || 'viewer';
+      const roleText = currentUserRole === 'admin' ? '管理员' : (currentUserRole === 'editor' ? '编辑用户' : '浏览用户');
+      document.getElementById('usernameDisplay').textContent = `${u.username} (${roleText})`;
+      sessionStorage.setItem('cached_user', JSON.stringify({ username: u.username, role: u.role }));
+      applyRolePermissions();
+      return true;
+    } catch (e) {
+      if (isNetworkError(e)) {
+        const cached = sessionStorage.getItem('cached_user');
+        if (cached) {
+          const u = JSON.parse(cached);
+          currentUserRole = u.role || 'viewer';
+          document.getElementById('usernameDisplay').textContent = `${u.username} (离线-${currentUserRole})`;
+          applyRolePermissions();
+          return true;
+        } else {
+          window.location.href = '/login.html';
+          return false;
+        }
+      }
+      window.location.href = '/login.html';
+      return false;
     }
-    
-    // 尝试从 localStorage 获取本地用户配置
-    const localUser = localStorage.getItem(LOCAL_USER_KEY);
-    if (localUser) {
-      const u = JSON.parse(localUser);
-      currentUserRole = u.role || 'admin';
-      sessionStorage.setItem('cached_user', JSON.stringify(u));
-      document.getElementById('usernameDisplay').textContent = `${u.username} (${currentUserRole === 'admin' ? '管理员' : '编辑用户'})`;
-      return;
-    }
-    
-    // 创建默认管理员用户
-    const defaultUser = { username: '管理员', role: 'admin' };
-    localStorage.setItem(LOCAL_USER_KEY, JSON.stringify(defaultUser));
-    sessionStorage.setItem('cached_user', JSON.stringify(defaultUser));
-    currentUserRole = 'admin';
-    document.getElementById('usernameDisplay').textContent = `${defaultUser.username} (管理员)`;
   }
 
-  function changePassword() {
-    // 本地模式下密码修改
-    const overlay = document.createElement('div'); overlay.className = 'modal-overlay';
-    overlay.innerHTML = `<div class="modal-dialog" style="width:360px;"><div class="modal-header">修改密码（本地模式）</div><div class="modal-body">
-      <div class="form-group"><label>新密码</label><input type="password" id="newPass" style="width:100%;padding:8px;"></div>
-      <div class="form-group"><label>确认新密码</label><input type="password" id="confirmPass" style="width:100%;padding:8px;"></div>
-    </div><div class="modal-footer"><button class="btn-cancel" id="cancelChange">取消</button><button class="btn-primary" id="submitChange">确认修改</button></div></div>`;
-    document.body.appendChild(overlay);
-    document.getElementById('cancelChange').onclick = () => overlay.remove();
-    document.getElementById('submitChange').onclick = () => {
-      const p1 = document.getElementById('newPass').value, p2 = document.getElementById('confirmPass').value;
-      if (!p1 || !p2) { alert('所有字段必填'); return; }
-      if (p1 !== p2) { alert('两次输入不一致'); return; }
-      if (p1.length < 4) { alert('新密码至少4位'); return; }
-      // 本地保存密码信息（实际应用中应加密）
-      const user = JSON.parse(localStorage.getItem(LOCAL_USER_KEY) || '{"username":"管理员","role":"admin"}');
-      user.password = p1;
-      localStorage.setItem(LOCAL_USER_KEY, JSON.stringify(user));
-      alert('密码修改成功（本地存储）');
-      overlay.remove();
-    };
-    overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
-  }
-
-  async function logout() {
-    // 保存当前数据到本地
-    saveDataToLocal();
-    sessionStorage.removeItem('cached_user');
-    // 重新初始化本地用户
-    initLocalAuth();
-    // 刷新应用状态
-    selectedNodeId = null;
-    expandedNodeIds.clear();
-    renderTree();
-    refreshDetailView();
-    updateFamilySelector();
-    refreshEditButtons();
-    showInfoBar('已退出登录（本地模式）', 2000);
-  }
-
-  // ==================== 核心数据管理 ====================
   function generateId() { return 'n' + Date.now() + Math.random().toString(36).substr(2, 8); }
   function getCurrentFamily() { if (!appData.currentFamilyId || appData.families.length === 0) return null; return appData.families.find(f => f.id === appData.currentFamilyId) || null; }
   function getCurrentRoot() { const fam = getCurrentFamily(); return fam ? fam.root : null; }
@@ -493,7 +466,6 @@
   function findParentNode(root, targetId) { if (!root.children) return null; for (const c of root.children) { if (c.id === targetId) return root; const f = findParentNode(c, targetId); if (f) return f; } return null; }
   function getMaxGeneration(node) { if (!node) return 0; if (!node.children || node.children.length === 0) return 0; let max = 0; for (const child of node.children) { const depth = getMaxGeneration(child); if (depth > max) max = depth; } return max + 1; }
 
-  // 本地应用操作
   function localApply(op) {
     const root = getCurrentRoot();
     if (!root && !['addFamily','deleteFamily','renameFamily','setFamilyPreface'].includes(op.action)) return false;
@@ -513,9 +485,122 @@
     return false;
   }
 
-  function saveDataToLocal() {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(appData));
-    updateSyncStatus('local', '本地已保存');
+  function saveDataToLocal() { appData._version = baseVersion; localStorage.setItem(STORAGE_KEY, JSON.stringify(appData)); }
+
+  function addOperation(action, payload) {
+    const requiresRoot = ['addChild','deleteMember','setAttr','setName','deleteAttr','reorderChildren'];
+    if (requiresRoot.includes(action)) { if (!getCurrentRoot()) { alert('请先选择一个家族'); return false; } if (!payload.familyId) payload.familyId = appData.currentFamilyId; }
+    const op = { action, payload };
+    if (!localApply(op)) { if (requiresRoot.includes(action)) alert('操作失败，请刷新页面后重试'); return false; }
+    pendingOperations.push(op);
+    renderTree(); refreshDetailView(); updateFamilySelector(); updateStatusBar();
+    saveDataToLocal();
+    scheduleSync();
+    localStorage.setItem('has_pending_changes', '1');
+    refreshEditButtons();
+    return true;
+  }
+
+  function scheduleSync() {
+    if (syncTimer) clearTimeout(syncTimer);
+    if (isUserEditing) { syncTimer = setTimeout(() => scheduleSync(), 2000); return; }
+    syncTimer = setTimeout(() => syncNow(), 1500);
+  }
+
+  function updateSyncStatus(status, message) {
+    lastSyncStatus = status;
+    const statusEl = document.getElementById('syncStatusIndicator');
+    if (statusEl) {
+      const icons = { idle: '☁️', syncing: '🔄', success: '✅', error: '❌', conflict: '⚠️' };
+      statusEl.textContent = (icons[status] || '') + (message || '');
+      statusEl.title = message || status;
+    }
+  }
+
+  async function syncNow() {
+    if (pendingOperations.length === 0) { updateSyncStatus('idle', '已同步'); return; }
+    if (isSyncing) return;
+    isSyncing = true;
+    syncRetryCount = 0;
+    updateSyncStatus('syncing', '同步中...');
+    try {
+      const result = await attemptSyncWithRetry();
+      if (result.success) { updateSyncStatus('success', '已同步'); syncConflictRetries = 0; }
+      else updateSyncStatus('error', result.message || '同步失败');
+    } catch (e) { updateSyncStatus('error', '同步失败'); }
+    finally { isSyncing = false; }
+  }
+
+  async function attemptSyncWithRetry() {
+    const ops = [...pendingOperations];
+    try {
+      const res = await fetch(CLOUD_API_URL, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ operations: ops, baseVersion })
+      });
+      if (res.ok) {
+        const result = await res.json();
+        baseVersion = result.version;
+        pendingOperations = pendingOperations.filter(op => !ops.includes(op));
+        if (pendingOperations.length === 0) localStorage.removeItem('has_pending_changes');
+        saveDataToLocal();
+        syncRetryCount = 0;
+        return { success: true };
+      }
+      if (res.status === 401) { showInfoBar('❌ 登录已过期，即将跳转到登录页', 3000); setTimeout(() => window.location.href = '/login.html', 1500); return { success: false, message: '登录已过期' }; }
+      if (res.status === 409) {
+        if (syncConflictRetries < MAX_CONFLICT_RETRIES) {
+          syncConflictRetries++;
+          updateSyncStatus('conflict', `版本冲突，正在重试 (${syncConflictRetries}/${MAX_CONFLICT_RETRIES})...`);
+          const replayResult = await replayOperationsOnLatest();
+          if (replayResult.success) return await attemptSyncWithRetry();
+          else { showInfoBar('⚠️ 版本冲突，部分操作无法合并，本地修改已保留', 5000); return { success: false, message: '版本冲突' }; }
+        } else { showInfoBar('⚠️ 版本冲突，多次重试失败，本地修改已保留', 5000); syncConflictRetries = 0; return { success: false, message: '版本冲突' }; }
+      }
+      if (res.status === 403) { showInfoBar('❌ 权限不足，无法同步', 5000); return { success: false, message: '权限不足' }; }
+      const text = await res.text();
+      if (text.startsWith('<!DOCTYPE') || text.startsWith('<html')) return { success: false, message: '服务器异常' };
+      else return { success: false, message: `错误 ${res.status}` };
+    } catch (e) {
+      if (syncRetryCount < syncMaxRetries) {
+        syncRetryCount++;
+        const delay = Math.pow(2, syncRetryCount) * 1000;
+        updateSyncStatus('syncing', `网络错误，${Math.round(delay/1000)}秒后重试 (${syncRetryCount}/${syncMaxRetries})...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        return await attemptSyncWithRetry();
+      } else {
+        showInfoBar(isNetworkError(e) ? '⚠️ 无法连接云端，数据已保存在本地' : `同步失败: ${e.message}`, 5000);
+        syncRetryCount = 0;
+        return { success: false, message: isNetworkError(e) ? '网络错误' : e.message };
+      }
+    }
+  }
+
+  async function replayOperationsOnLatest() {
+    try {
+      const res = await fetch(CLOUD_API_URL);
+      if (!res.ok) return { success: false };
+      const cloudData = await res.json();
+      if (!cloudData.families || !Array.isArray(cloudData.families)) return { success: false };
+      const savedFamilyId = appData.currentFamilyId;
+      const savedSelectedNodeId = selectedNodeId;
+      const savedExpandedIds = new Set(expandedNodeIds);
+      const savedOps = [...pendingOperations];
+      appData = JSON.parse(JSON.stringify(cloudData));
+      baseVersion = cloudData._version || 0;
+      pendingOperations = [];
+      if (savedFamilyId && appData.families.some(f => f.id === savedFamilyId)) appData.currentFamilyId = savedFamilyId;
+      else if (appData.families.length > 0) appData.currentFamilyId = appData.families[0].id;
+      else appData.currentFamilyId = null;
+      const failedOps = [];
+      for (const op of savedOps) { if (localApply(op)) pendingOperations.push(op); else failedOps.push(op); }
+      selectedNodeId = savedSelectedNodeId;
+      expandedNodeIds = savedExpandedIds;
+      saveDataToLocal(); renderTree(); refreshDetailView(); updateFamilySelector(); refreshEditButtons();
+      if (failedOps.length > 0) console.warn('部分操作重放失败:', failedOps);
+      return { success: true, failedCount: failedOps.length };
+    } catch (e) { console.error('重放操作失败:', e); return { success: false }; }
   }
 
   function loadData() {
@@ -523,6 +608,7 @@
     if (s) {
       try {
         appData = JSON.parse(s);
+        baseVersion = appData._version || 0;
         if (!appData.families || !Array.isArray(appData.families)) throw new Error();
         appData.families.forEach(f => { if (f.preface === undefined) f.preface = ''; });
         if (appData.families.length === 0) appData.currentFamilyId = null;
@@ -533,57 +619,124 @@
     updateFamilySelector();
   }
 
-  // 添加操作并立即应用到本地存储
-  function addOperation(action, payload) {
-    const requiresRoot = ['addChild','deleteMember','setAttr','setName','deleteAttr','reorderChildren'];
-    if (requiresRoot.includes(action)) { 
-      if (!getCurrentRoot()) { alert('请先选择一个家族'); return false; } 
-      if (!payload.familyId) payload.familyId = appData.currentFamilyId; 
+  async function loadRemoteData(data, version) {
+    if (!data || !data.families || !Array.isArray(data.families)) { showInfoBar('❌ 云端数据无效，未加载', 3000); return; }
+    const savedFamilyId = appData.currentFamilyId;
+    appData = data;
+    baseVersion = version;
+    pendingOperations = [];
+    selectedNodeId = null; expandedNodeIds.clear();
+    if (savedFamilyId && appData.families.some(f => f.id === savedFamilyId)) appData.currentFamilyId = savedFamilyId;
+    else if (appData.families.length > 0) appData.currentFamilyId = appData.families[0].id;
+    else appData.currentFamilyId = null;
+    const root = getCurrentRoot(); if (root) expandedNodeIds.add(root.id);
+    saveDataToLocal(); renderTree(); refreshDetailView(); updateFamilySelector(); refreshEditButtons();
+  }
+
+  async function initialSyncFromCloud() {
+    try {
+      const res = await fetch(CLOUD_API_URL);
+      if (res.ok) {
+        const cloudData = await res.json();
+        if (cloudData.families && Array.isArray(cloudData.families)) {
+          const cloudVersion = cloudData._version || 0;
+          const localVersion = baseVersion || 0;
+          if (localStorage.getItem('has_pending_changes') === '1' && pendingOperations.length > 0) {
+            if (cloudVersion > localVersion) await replayOperationsOnLatestData(cloudData, cloudVersion);
+            else await syncNow();
+          } else await loadRemoteData(cloudData, cloudVersion);
+        }
+      } else if (res.status === 401) window.location.href = '/login.html';
+    } catch (e) { console.warn('初始同步失败，使用本地数据:', e); }
+  }
+
+  async function replayOperationsOnLatestData(cloudData, cloudVersion) {
+    const savedFamilyId = appData.currentFamilyId;
+    const savedSelectedNodeId = selectedNodeId;
+    const savedExpandedIds = new Set(expandedNodeIds);
+    const savedOps = [...pendingOperations];
+    appData = JSON.parse(JSON.stringify(cloudData));
+    baseVersion = cloudVersion;
+    pendingOperations = [];
+    if (savedFamilyId && appData.families.some(f => f.id === savedFamilyId)) appData.currentFamilyId = savedFamilyId;
+    else if (appData.families.length > 0) appData.currentFamilyId = appData.families[0].id;
+    else appData.currentFamilyId = null;
+    for (const op of savedOps) { if (localApply(op)) pendingOperations.push(op); }
+    selectedNodeId = savedSelectedNodeId; expandedNodeIds = savedExpandedIds;
+    saveDataToLocal(); renderTree(); refreshDetailView(); updateFamilySelector(); refreshEditButtons();
+    await syncNow();
+  }
+
+  function startAutoSync() {
+    if (autoSyncTimer) clearInterval(autoSyncTimer);
+    autoSyncTimer = setInterval(() => { if (!isUserEditing && !isSyncing) pollCloudUpdates(); }, 30000);
+  }
+
+  async function pollCloudUpdates() {
+    if (isSyncing || isUserEditing) return;
+    try {
+      const versionRes = await fetch(CLOUD_API_URL + '?action=version');
+      if (!versionRes.ok) { if (versionRes.status === 401) window.location.href = '/login.html'; return; }
+      const versionData = await versionRes.json();
+      const cloudVersion = versionData.version || 0;
+      if (cloudVersion <= baseVersion) return;
+      const res = await fetch(CLOUD_API_URL);
+      if (!res.ok) return;
+      const cloudData = await res.json();
+      if (!cloudData.families || !Array.isArray(cloudData.families)) return;
+      if (pendingOperations.length > 0) await replayOperationsOnLatestData(cloudData, cloudVersion);
+      else { await loadRemoteData(cloudData, cloudVersion); showInfoBar('☁️ 已从云端获取最新数据', 2000); }
+    } catch (e) { console.debug('轮询更新失败:', e); }
+  }
+
+  async function handleFileImport(e) {
+    const f = e.target.files[0]; if (!f) return;
+    if (pendingOperations.length > 0 || localStorage.getItem('has_pending_changes') === '1') {
+      if (!confirm('您有未同步的本地修改，导入新数据将丢失这些修改，确定继续吗？')) { e.target.value = ''; return; }
     }
-    const op = { action, payload };
-    if (!localApply(op)) { if (requiresRoot.includes(action)) alert('操作失败，请刷新页面后重试'); return false; }
-    // 直接保存到本地，无需网络
-    renderTree(); refreshDetailView(); updateFamilySelector(); updateStatusBar();
-    saveDataToLocal();
-    refreshEditButtons();
-    return true;
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      try {
+        const data = JSON.parse(ev.target.result);
+        if (data.families && Array.isArray(data.families)) {
+          try {
+            data._forceOverwrite = true;
+            const res = await fetch(CLOUD_API_URL, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+            if (res.ok) { const result = await res.json(); baseVersion = result.version; data._version = result.version; }
+            else throw new Error('云端不可用');
+          } catch (cloudErr) { data._version = baseVersion; showInfoBar('☁️ 无法连接云端，已离线导入数据', 3000); }
+          appData = data; pendingOperations = []; selectedNodeId = null; expandedNodeIds.clear();
+          const root = getCurrentRoot(); if (root) expandedNodeIds.add(root.id);
+          saveDataToLocal(); renderTree(); refreshDetailView(); updateFamilySelector(); switchTab('properties'); refreshEditButtons();
+        } else if (data.isRoot) {
+          const fam = { id: generateId(), name: '导入的家族', root: data, preface: '' };
+          addOperation('addFamily', { family: fam }); appData.currentFamilyId = fam.id;
+          selectedNodeId = null; expandedNodeIds.clear(); expandedNodeIds.add(fam.root.id);
+          renderTree(); refreshDetailView(); updateFamilySelector();
+        } else throw new Error('格式错误');
+      } catch (ex) { alert('文件格式错误或损坏'); }
+    };
+    reader.readAsText(f);
   }
 
-  // 同步功能简化为仅本地保存
-  async function syncNow() {
-    saveDataToLocal();
-    showInfoBar('数据已保存到本地', 2000);
+  function updateFamilySelector() {
+    const sel = document.getElementById('familySelector'); if (!sel) return;
+    sel.innerHTML = '';
+    if (appData.families.length === 0) { const opt = document.createElement('option'); opt.value = ''; opt.textContent = '（无家族）'; sel.appendChild(opt); return; }
+    appData.families.forEach(f => {
+      const opt = document.createElement('option'); opt.value = f.id; opt.textContent = f.name;
+      if (f.id === appData.currentFamilyId) opt.selected = true;
+      sel.appendChild(opt);
+    });
   }
 
-  async function loadFromCloud() {
-    // 在本地模式下，从本地存储重新加载
-    loadData();
-    selectedNodeId = null;
-    expandedNodeIds.clear();
-    const root = getCurrentRoot();
-    if (root) expandedNodeIds.add(root.id);
-    renderTree();
-    refreshDetailView();
-    updateFamilySelector();
-    refreshEditButtons();
-    showInfoBar('已从本地存储重新加载数据', 2000);
-  }
-
-  function updateSyncStatus(status, msg) {
-    const el = document.getElementById('syncStatusIndicator');
-    if (el) {
-      el.textContent = status === 'local' ? '💾 本地存储' : '💾 本地已保存';
-    }
-  }
-
-  // ==================== UI 渲染 ====================
   window.switchFamily = async function(familyId) {
     if (!familyId || familyId === appData.currentFamilyId) return;
+    if (pendingOperations.length > 0) await syncNow();
     appData.currentFamilyId = familyId;
     selectedNodeId = null; expandedNodeIds.clear();
     const root = getCurrentRoot(); if (root) expandedNodeIds.add(root.id);
-    saveDataToLocal();
-    renderTree(); refreshDetailView(); updateFamilySelector(); refreshEditButtons();
+    saveDataToLocal(); renderTree(); refreshDetailView(); updateFamilySelector(); refreshEditButtons();
   };
 
   function renderTree() {
@@ -614,7 +767,6 @@
     if (!expandedNodeIds.has(root.id)) { expandedNodeIds.add(root.id); renderTree(); return; }
     updateStatusBar();
   }
-
   function toggleExpand(id) { expandedNodeIds.has(id) ? expandedNodeIds.delete(id) : expandedNodeIds.add(id); renderTree(); if (selectedNodeId) refreshDetailView(); }
   function selectNode(id) { selectedNodeId = id; refreshDetailView(); renderTree(); updateStatusBar(); refreshEditButtons(); }
 
@@ -708,9 +860,9 @@
       if (fieldType === 'date' && newVal && !isDateValid(newVal)) { alert('出生日期不能晚于今天'); input.focus(); return; }
       if (fieldName === '姓名' && newVal && newVal !== node.name) addOperation('setName', { memberId: node.id, newName: newVal });
       else if (attrName) addOperation('setAttr', { memberId: node.id, attrName, value: newVal });
-      isUserEditing = false;
+      isUserEditing = false; scheduleSync();
     };
-    input.addEventListener('blur', () => { isUserEditing = false; save(); });
+    input.addEventListener('blur', () => { isUserEditing = false; scheduleSync(); save(); });
     input.addEventListener('keydown', e => { if (e.key==='Enter' && fieldType!=='textarea') { e.preventDefault(); save(); } });
   }
 
@@ -719,56 +871,20 @@
     const td = tr.querySelector('.col-data'); if (td.querySelector('input')) return;
     const currentVal = node.attributes[idx]?.value || '';
     const input = document.createElement('input'); input.value = currentVal; td.innerHTML = ''; td.appendChild(input); input.focus();
-    const save = () => { if (node.attributes[idx]) addOperation('setAttr', { memberId: node.id, attrName: node.attributes[idx].name, value: input.value.trim() }); isUserEditing = false; };
-    input.addEventListener('blur', () => { isUserEditing = false; save(); });
+    const save = () => { if (node.attributes[idx]) addOperation('setAttr', { memberId: node.id, attrName: node.attributes[idx].name, value: input.value.trim() }); isUserEditing = false; scheduleSync(); };
+    input.addEventListener('blur', () => { isUserEditing = false; scheduleSync(); save(); });
     input.addEventListener('keydown', e => { if (e.key==='Enter') { e.preventDefault(); save(); } });
   }
 
-  // ==================== 权限与编辑按钮 ====================
-  function canEditNode(node) {
-    if (!node) return false;
-    if (currentUserRole === 'admin') return true;
-    if (currentUserRole === 'viewer') return false;
-    return false; // 本地模式下简单处理
-  }
-
-  function canAddSibling(node) {
-    if (!node || node.isRoot) return false;
-    return currentUserRole === 'admin';
-  }
-
-  function refreshEditButtons() {
-    const isAdmin = (currentUserRole === 'admin');
-    const editButtons = document.querySelectorAll('.edit-btn');
-    editButtons.forEach(b => b.disabled = !isAdmin);
-  }
-
-  // ==================== 操作函数 ====================
-  function addChildMember(id) {
-    const nid = id || selectedNodeId; if (!nid) return;
-    const root = getCurrentRoot(); if (!root) return;
-    const n = findNodeById(root, nid);
-    if (!n || !canEditNode(n)) { alert('没有编辑权限'); return; }
-    showMemberDialog(null, n);
-  }
-
-  function addSiblingMember(id) {
-    const nid = id || selectedNodeId; if (!nid) return;
-    const root = getCurrentRoot(); if (!root) return;
-    const n = findNodeById(root, nid);
-    if (!n || n.isRoot || !canAddSibling(n)) { alert('不能添加兄弟'); return; }
-    const p = findParentNode(root, nid);
-    if (!p) return;
-    showMemberDialog(null, p);
-  }
+  function ensureEditPermission(node) { if (!node) { alert('请先选择一个成员'); return false; } if (!canEditNode(node)) { alert('您没有编辑该成员的权限'); return false; } return true; }
 
   function addAttribute() {
-    if (!selectedNodeId || !getCurrentRoot()) return;
+    if (!selectedNodeId || !getCurrentRoot()) { alert('请先选择一个成员'); return; }
     const node = findNodeById(getCurrentRoot(), selectedNodeId);
-    if (!canEditNode(node)) { alert('没有权限'); return; }
+    if (!ensureEditPermission(node)) return;
     const name = prompt('新信息名称：'); if (!name?.trim()) return;
     const trimmed = name.trim();
-    if (['职业','简介','备注'].includes(trimmed)) { alert('该信息已存在固定位置'); return; }
+    if (trimmed === '职业' || trimmed === '简介' || trimmed === '备注') { alert('该信息已存在固定位置'); return; }
     if (node.attributes && node.attributes.some(a => a.name === trimmed)) { alert('该信息已存在'); return; }
     addOperation('setAttr', { memberId: node.id, attrName: trimmed, value: '' });
   }
@@ -776,11 +892,11 @@
   function deleteAttribute() {
     if (!selectedNodeId || !getCurrentRoot()) return;
     const node = findNodeById(getCurrentRoot(), selectedNodeId);
-    if (!canEditNode(node)) return;
+    if (!ensureEditPermission(node)) return;
     const name = prompt('要删除的信息名称：');
     if (!name) return;
     const protectedAttrs = ['性别', '出生日期', '出生地', '配偶'];
-    if (protectedAttrs.includes(name)) { alert(`不能删除核心属性"${name}"`); return; }
+    if (protectedAttrs.includes(name)) { alert(`不能删除核心属性"${name}"，这会影响系统功能`); return; }
     addOperation('deleteAttr', { memberId: node.id, attrName: name });
   }
 
@@ -788,12 +904,14 @@
     const nid = id || selectedNodeId; if (!nid) return;
     const root = getCurrentRoot(); if (!root) return;
     const node = findNodeById(root, nid);
-    if (!canEditNode(node)) { alert('没有权限'); return; }
+    if (!ensureEditPermission(node)) return;
     if (node.isRoot) return;
     if (confirm(`确定删除「${node.name}」及其后代吗？`)) {
       const parent = findParentNode(root, nid);
       if (!parent) return;
-      const snapshot = JSON.parse(JSON.stringify(parent.children.find(c => c.id === nid)));
+      const idx = parent.children.findIndex(c => c.id === nid);
+      if (idx === -1) return;
+      const snapshot = JSON.parse(JSON.stringify(parent.children[idx]));
       if (addOperation('deleteMember', { memberId: nid })) {
         undoStack.push({ node: snapshot, parentId: parent.id });
         if (undoStack.length > 20) undoStack.shift();
@@ -803,11 +921,31 @@
     }
   }
 
+  function addChildMember(id) {
+    const nid = id || selectedNodeId; if (!nid) return;
+    const root = getCurrentRoot(); if (!root) return;
+    const n = findNodeById(root, nid);
+    if (!ensureEditPermission(n)) return;
+    showMemberDialog(null, n);
+  }
+
+  function addSiblingMember(id) {
+    const nid = id || selectedNodeId; if (!nid) return;
+    const root = getCurrentRoot(); if (!root) return;
+    const n = findNodeById(root, nid);
+    if (!ensureEditPermission(n)) return;
+    if (n.isRoot) return;
+    if (currentUserRole === 'editor' && isFatherOfCurrentUser(n)) { alert('您只能为本人或直系后代添加兄弟'); return; }
+    const p = findParentNode(root, nid);
+    if (!p) return;
+    showMemberDialog(null, p);
+  }
+
   function performUndo() {
     if (undoStack.length > 0) {
-      const { node, parentId } = undoStack.pop();
+      const { node: restoredNode, parentId } = undoStack.pop();
       document.querySelectorAll('.undo-bar').forEach(el => el.remove());
-      addOperation('addChild', { parentId, node });
+      addOperation('addChild', { parentId, node: restoredNode });
       showInfoBar('已撤销删除');
       if (undoStack.length > 0) showUndoBar();
     }
@@ -816,11 +954,25 @@
   function showUndoBar() {
     document.querySelectorAll('.undo-bar').forEach(el => el.remove());
     if (undoStack.length === 0) return;
-    const bar = document.createElement('div'); bar.className = 'undo-bar';
+    const bar = document.createElement('div');
+    bar.className = 'undo-bar';
     const latest = undoStack[undoStack.length - 1];
     bar.innerHTML = `已删除成员「${latest.node.name}」<button id="undoDeleteBtn">撤销 (Ctrl+Z) - 剩余 ${undoStack.length} 步</button>`;
     document.getElementById('appWindow').prepend(bar);
     document.getElementById('undoDeleteBtn').onclick = performUndo;
+  }
+
+  function performUndoAll() {
+    if (pendingDeleteAllData) {
+      appData = pendingDeleteAllData;
+      baseVersion = appData._version || 0;
+      pendingDeleteAllData = null; pendingOperations = [];
+      document.querySelectorAll('.undo-bar').forEach(el => el.remove());
+      selectedNodeId = null; expandedNodeIds.clear();
+      const root = getCurrentRoot(); if (root) expandedNodeIds.add(root.id);
+      saveDataToLocal(); renderTree(); refreshDetailView(); updateFamilySelector();
+      showInfoBar('已撤销删除所有数据'); refreshEditButtons();
+    }
   }
 
   function showInfoBar(msg, dur = 3000) {
@@ -829,6 +981,100 @@
     bar.innerHTML = `${msg}<button onclick="this.parentElement.remove()">✕</button>`;
     document.getElementById('appWindow').prepend(bar);
     if (dur > 0) setTimeout(() => { if (bar.parentNode) bar.remove(); }, dur);
+  }
+
+  function openSortDialog() {
+    if (!selectedNodeId || !getCurrentRoot()) return;
+    const node = findNodeById(getCurrentRoot(), selectedNodeId);
+    if (!ensureEditPermission(node)) return;
+    if (!node.children || node.children.length < 2) { alert('无子女或不足两位'); return; }
+    const children = [...node.children];
+    const overlay = document.createElement('div'); overlay.className = 'modal-overlay';
+    overlay.innerHTML = `<div class="modal-dialog" style="width:400px;"><div class="modal-header">排序子女 (${children.length}位)</div><div class="modal-body" id="sortList">${children.map((c,i)=>`<div class="sort-item" data-index="${i}"><span>${escapeHtml(c.name)} (${getAttr(c,'性别')})</span><div><button class="btn-up" ${i===0?'disabled':''}>▲</button><button class="btn-down" ${i===children.length-1?'disabled':''}>▼</button></div></div>`).join('')}</div><div class="modal-footer"><button class="btn-cancel" id="sortCancel">取消</button><button class="btn-primary" id="sortOk">保存</button></div></div>`;
+    document.body.appendChild(overlay);
+    const sortList = overlay.querySelector('#sortList');
+    function updateBtns() { sortList.querySelectorAll('.sort-item').forEach((item,idx)=>{ item.querySelector('.btn-up').disabled = idx===0; item.querySelector('.btn-down').disabled = idx===sortList.children.length-1; }); }
+    sortList.addEventListener('click', e => {
+      const btn = e.target; const item = btn.closest('.sort-item'); if (!item) return;
+      const idx = Array.from(sortList.children).indexOf(item);
+      if (btn.classList.contains('btn-up') && idx>0) { sortList.insertBefore(item, sortList.children[idx-1]); updateBtns(); }
+      else if (btn.classList.contains('btn-down') && idx<sortList.children.length-1) { sortList.insertBefore(sortList.children[idx+1], item); updateBtns(); }
+    });
+    overlay.querySelector('#sortCancel').onclick = () => overlay.remove();
+    overlay.querySelector('#sortOk').onclick = () => {
+      const newOrder = Array.from(sortList.querySelectorAll('.sort-item'), item => children[parseInt(item.dataset.index)]);
+      addOperation('reorderChildren', { parentId: node.id, newOrder: newOrder.map(c => c.id) });
+      overlay.remove();
+    };
+  }
+
+  function openPrefaceDialog() {
+    const fam = getCurrentFamily(); if (!fam) { alert('请先选择一个家族'); return; }
+    const isAdmin = (currentUserRole === 'admin');
+    const overlay = document.createElement('div'); overlay.className = 'modal-overlay';
+    overlay.innerHTML = `<div class="modal-dialog" style="width:600px; max-width:95vw;"><div class="modal-header">📜 家族序言 - ${escapeHtml(fam.name)}</div><div class="modal-body"><textarea id="prefaceTextarea" style="width:100%; height:300px; padding:10px; font-size:13px; resize:vertical; border:1px solid #ccc; border-radius:4px;" ${isAdmin ? '' : 'readonly'}>${escapeHtml(fam.preface || '')}</textarea></div><div class="modal-footer"><button class="btn-cancel" id="prefaceCancel">${isAdmin ? '取消' : '关闭'}</button>${isAdmin ? '<button class="btn-primary" id="prefaceSave">保存</button>' : ''}</div></div>`;
+    document.body.appendChild(overlay);
+    if (isAdmin) {
+      overlay.querySelector('#prefaceCancel').onclick = () => overlay.remove();
+      overlay.querySelector('#prefaceSave').onclick = () => { const newPreface = overlay.querySelector('#prefaceTextarea').value; addOperation('setFamilyPreface', { familyId: fam.id, preface: newPreface }); overlay.remove(); };
+    } else { overlay.querySelector('#prefaceCancel').onclick = () => overlay.remove(); }
+    overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+  }
+
+  // ========== 修复后的 openFamilyManageDialog（含重名检测） ==========
+  function openFamilyManageDialog() {
+    const overlay = document.createElement('div'); overlay.className = 'modal-overlay';
+    const isAdmin = (currentUserRole === 'admin');
+    let listHtml = appData.families.length === 0 ? '<div style="padding:20px; text-align:center; color:#888;">暂无家族，请新建</div>' :
+      appData.families.map(f => `<div style="display:flex; align-items:center; justify-content:space-between; padding:6px 0; border-bottom:1px solid #eee;">
+        <span style="flex:1;">${escapeHtml(f.name)} ${f.id === appData.currentFamilyId ? '(当前)' : ''}</span>
+        <div>
+          <button data-action="switch" data-id="${f.id}" style="margin-right:4px;">切换</button>
+          ${isAdmin ? `<button data-action="rename" data-id="${f.id}" style="margin-right:4px;">重命名</button>` : ''}
+          ${isAdmin ? `<button data-action="delete" data-id="${f.id}" style="color:#c42b1c;" ${appData.families.length<=1?'disabled':''}>删除</button>` : ''}
+        </div>
+      </div>`).join('');
+    overlay.innerHTML = `<div class="modal-dialog" style="width:500px;"><div class="modal-header">家族管理</div>
+      <div class="modal-body">
+        ${isAdmin ? '<div style="margin-bottom:12px;"><button id="newFamilyBtn" class="btn-primary" style="padding:6px 12px;">➕ 新建家族</button></div>' : ''}
+        <div id="familyList">${listHtml}</div>
+      </div>
+      <div class="modal-footer"><button class="btn-cancel" id="closeManage">关闭</button></div></div>`;
+    document.body.appendChild(overlay);
+    overlay.querySelector('#closeManage').onclick = () => overlay.remove();
+    if (isAdmin) {
+      overlay.querySelector('#newFamilyBtn').onclick = () => {
+        const name = prompt('请输入新家族名称：');
+        if (name && name.trim()) {
+          const trimmed = name.trim();
+          // 【修复】检查重名
+          if (appData.families.some(f => f.name === trimmed)) {
+            alert('家族名称已存在，请使用其他名称');
+            return;
+          }
+          const newRoot = { id: 'root', name: trimmed, isRoot: true, children: [] };
+          const newFam = { id: generateId(), name: trimmed, root: newRoot, preface: '' };
+          if (addOperation('addFamily', { family: newFam })) {
+            appData.currentFamilyId = newFam.id;
+            selectedNodeId = null;
+            expandedNodeIds.clear();
+            expandedNodeIds.add(newRoot.id);
+            renderTree();
+            refreshDetailView();
+            updateFamilySelector();
+            overlay.remove();
+            refreshEditButtons();
+          }
+        }
+      };
+    }
+    overlay.querySelector('#familyList').addEventListener('click', (e) => {
+      const btn = e.target.closest('button'); if (!btn) return;
+      const action = btn.dataset.action; const fid = btn.dataset.id;
+      if (action === 'switch') { switchFamily(fid); overlay.remove(); }
+      else if (action === 'rename') { if (!isAdmin) return; const fam = appData.families.find(f => f.id === fid); if (!fam) return; const newName = prompt('新名称：', fam.name); if (newName && newName.trim()) { addOperation('renameFamily', { familyId: fid, newName: newName.trim() }); overlay.remove(); } }
+      else if (action === 'delete') { if (!isAdmin) return; if (appData.families.length <= 1) { alert('至少保留一个家族'); return; } if (confirm(`确定删除家族及其所有数据吗？`)) { addOperation('deleteFamily', { familyId: fid }); overlay.remove(); } }
+    });
   }
 
   function showMemberDialog(existing, parent) {
@@ -844,7 +1090,7 @@
       <div class="form-group"><label>备注</label><input type="text" id="dNote" value="${escapeHtml(getAttr(node,'备注'))}" style="width:100%;padding:8px;"></div>
     </div><div class="modal-footer"><button class="btn-cancel" id="dCancel">取消</button><button class="btn-primary" id="dOk">${isEdit?'保存':'添加'}</button></div></div>`;
     document.body.appendChild(overlay);
-    const close = () => { overlay.remove(); isUserEditing = false; };
+    const close = () => { overlay.remove(); isUserEditing = false; scheduleSync(); };
     overlay.querySelector('#dCancel').onclick = close;
     overlay.querySelector('#dOk').onclick = () => {
       const name = overlay.querySelector('#dName').value.trim(); if (!name) { alert('请输入姓名'); return; }
@@ -854,117 +1100,52 @@
         if (name !== existing.name) addOperation('setName', { memberId: existing.id, newName: name });
         const oldAttrs = existing.attributes || [];
         for (const attr of attrs) { const old = oldAttrs.find(a => a.name === attr.name); if (!old || old.value !== attr.value) addOperation('setAttr', { memberId: existing.id, attrName: attr.name, value: attr.value }); }
+        for (const old of oldAttrs) { if (!attrs.some(a => a.name === old.name)) addOperation('deleteAttr', { memberId: existing.id, attrName: old.name }); }
       } else {
         const newNode = { id: generateId(), name, attributes: attrs, children: [] };
         const parentId = parent ? parent.id : (getCurrentRoot() ? getCurrentRoot().id : null);
         if (parentId) { addOperation('addChild', { parentId, node: newNode }); expandedNodeIds.add(parentId); }
       }
-      close();
-      refreshEditButtons();
+      close(); refreshEditButtons();
     };
     overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
   }
 
-  // ==================== 其他功能 ====================
-  function exportData() {
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(new Blob([JSON.stringify(appData, null, 2)], { type: 'application/json' }));
-    a.download = '源锦族谱管理备份.json';
-    a.click();
+  function showContextMenu(x, y, node) {
+    const menu = document.getElementById('contextMenu');
+    menu.style.left = x + 'px'; menu.style.top = y + 'px';
+    const items = menu.querySelectorAll('.cm-item');
+    const isAdmin = (currentUserRole === 'admin');
+    const isViewer = (currentUserRole === 'viewer');
+    let hasVisible = false;
+    items.forEach(item => {
+      const action = item.getAttribute('onclick');
+      if (isViewer) { item.style.display = 'none'; return; }
+      if (isAdmin) { item.style.display = ''; hasVisible = true; return; }
+      if (action.includes('addChildMember') || action.includes('addAttribute') || action.includes('deleteSelectedMember')) {
+        if (canEditNode(node)) { item.style.display = ''; hasVisible = true; } else item.style.display = 'none';
+      } else if (action.includes('addSiblingMember')) {
+        if (canAddSibling(node)) { item.style.display = ''; hasVisible = true; } else item.style.display = 'none';
+      } else item.style.display = 'none';
+    });
+    if (!hasVisible) { menu.classList.remove('show'); return; }
+    menu.classList.add('show');
   }
+  document.addEventListener('click', () => document.getElementById('contextMenu').classList.remove('show'));
 
+  function expandAllNodes() { const root = getCurrentRoot(); if (!root) return; function c(n) { if (n.children && n.children.length) { expandedNodeIds.add(n.id); n.children.forEach(c); } } c(root); expandedNodeIds.add(root.id); renderTree(); }
+  function collapseAllNodes() { expandedNodeIds.clear(); const root = getCurrentRoot(); if (root) expandedNodeIds.add(root.id); renderTree(); }
+
+  function exportData() {
+    if (currentUserRole !== 'admin') { alert('只有管理员可以使用导出功能'); return; }
+    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(appData, null, 2)])); a.download = '源锦族谱管理备份.json'; a.click();
+  }
   function importData() {
+    if (currentUserRole !== 'admin') { alert('只有管理员可以使用导入功能'); return; }
     document.getElementById('fileInput').click();
   }
 
-  async function handleFileImport(e) {
-    const f = e.target.files[0]; if (!f) return;
-    const reader = new FileReader();
-    reader.onload = async (ev) => {
-      try {
-        const data = JSON.parse(ev.target.result);
-        if (data.families && Array.isArray(data.families)) {
-          appData = data;
-          pendingOperations = [];
-          selectedNodeId = null;
-          expandedNodeIds.clear();
-          const root = getCurrentRoot();
-          if (root) expandedNodeIds.add(root.id);
-          saveDataToLocal();
-          renderTree();
-          refreshDetailView();
-          updateFamilySelector();
-          switchTab('properties');
-          refreshEditButtons();
-          showInfoBar('导入成功', 2000);
-        } else if (data.isRoot) {
-          const fam = { id: generateId(), name: '导入的家族', root: data, preface: '' };
-          if (addOperation('addFamily', { family: fam })) {
-            appData.currentFamilyId = fam.id;
-            selectedNodeId = null;
-            expandedNodeIds.clear();
-            expandedNodeIds.add(fam.root.id);
-            renderTree();
-            refreshDetailView();
-            updateFamilySelector();
-          }
-        } else throw new Error('格式错误');
-      } catch (ex) {
-        alert('文件格式错误或损坏');
-      }
-    };
-    reader.readAsText(f);
-  }
-
-  function deleteAllData() {
-    if (appData.families.length === 0) { alert('没有数据可删除'); return; }
-    if (!confirm('确定删除所有家族及全部成员数据吗？此操作不可恢复，但您可撤销。')) return;
-    pendingDeleteAllData = JSON.parse(JSON.stringify(appData));
-    appData = { families: [], currentFamilyId: null };
-    selectedNodeId = null;
-    expandedNodeIds.clear();
-    saveDataToLocal();
-    renderTree();
-    refreshDetailView();
-    updateFamilySelector();
-    refreshEditButtons();
-    showUndoBarForAllData();
-  }
-
-  function showUndoBarForAllData() {
-    document.querySelectorAll('.undo-bar').forEach(el => el.remove());
-    const bar = document.createElement('div'); bar.className = 'undo-bar';
-    bar.innerHTML = `已删除所有数据 <button id="undoDeleteAllBtn">撤销 (Ctrl+Z)</button>`;
-    document.getElementById('appWindow').prepend(bar);
-    document.getElementById('undoDeleteAllBtn').onclick = () => {
-      if (!pendingDeleteAllData) return;
-      appData = pendingDeleteAllData;
-      pendingDeleteAllData = null;
-      selectedNodeId = null;
-      expandedNodeIds.clear();
-      const root = getCurrentRoot();
-      if (root) expandedNodeIds.add(root.id);
-      saveDataToLocal();
-      renderTree();
-      refreshDetailView();
-      updateFamilySelector();
-      bar.remove();
-      showInfoBar('已撤销删除');
-      refreshEditButtons();
-    };
-  }
-
-  function openBackupDialog() {
-    alert('备份管理功能需要连接云端服务器。\n在本地模式下，您可以使用导出功能手动备份数据。');
-  }
-
-  function openAdminDialog() {
-    alert('用户管理功能需要连接云端服务器。\n本地模式下默认为管理员，无需额外管理。');
-  }
-
-  // ==================== 关系图 ====================
   function renderOrgChart(node) {
-    // ... (保持原有渲染逻辑，省略以节省篇幅，代码与之前完全一致)
     const gen = (node && !node.isRoot) ? getNodePath(node).length : 0;
     document.getElementById('detailTitle').innerHTML = node ? `🏢 ${escapeHtml(node.name)}${gen > 0 ? `<span style="font-size:10px; color:#444; margin-left:6px;">(第${gen}代)</span>` : ''}` : '请选择一个成员';
     const detailPathEl = document.getElementById('detailPath');
@@ -1107,6 +1288,7 @@
   function zoomOut() { autoFitEnabled = false; currentScale = Math.max(0.2, currentScale - 0.2); applyScale(); updateZoomButtons(); }
   function zoomReset() { autoFitEnabled = false; currentScale = 1; applyScale(); updateZoomButtons(); }
   function zoomToFit() { const t = document.getElementById('orgTree'), c = document.getElementById('orgChartContainer'); if (!t || !c) return; currentScale = Math.min(1, (c.clientWidth - 40) / t.scrollWidth); autoFitEnabled = true; applyScale(); updateZoomButtons(); }
+
   function updateViewModeButtons(m) { document.querySelectorAll('#viewModeBar button[data-mode]').forEach(b => b.classList.remove('active')); const btn = document.querySelector(`#viewModeBar button[data-mode="${m}"]`); if (btn) btn.classList.add('active'); }
   function updateZoomButtons() { document.getElementById('btnFitScreen').classList.toggle('active', autoFitEnabled); document.getElementById('btnOriginalSize').classList.toggle('active', !autoFitEnabled && currentScale === 1); }
   function setViewMode(mode) { if (mode === 'custom') { showCustomRangeDialog((up, down) => { customUp = up; customDown = down; relationViewMode = 'custom'; updateViewModeButtons('custom'); switchToRelation(); }); return; } relationViewMode = mode; updateViewModeButtons(mode); switchToRelation(); }
@@ -1119,7 +1301,286 @@
     overlay.querySelector('#okCustom').onclick = () => { let u = parseInt(document.getElementById('customUp').value) || 0, d = parseInt(document.getElementById('customDown').value) || 0; u = Math.min(9, Math.max(0, u)); d = Math.min(9, Math.max(0, d)); overlay.remove(); cb(u, d); };
   }
 
+  function applyRolePermissions() { const isAdmin = (currentUserRole === 'admin'); document.getElementById('btnExportChart').style.display = isAdmin ? '' : 'none'; refreshEditButtons(); }
+  function isFatherOfCurrentUser(node) { if (currentUserRole !== 'editor') return false; const username = document.getElementById('usernameDisplay').textContent.split(' ')[0]; if (!node || !node.children) return false; return node.children.some(child => child.name === username); }
+  function canEditNode(node) { if (!node) return false; if (currentUserRole === 'admin' && node.isRoot) return true; if (node.isRoot) return false; if (currentUserRole === 'admin') return true; if (currentUserRole === 'viewer') return false; if (currentUserRole === 'editor') { const username = document.getElementById('usernameDisplay').textContent.split(' ')[0]; if (node.name === username) return true; if (isFatherOfCurrentUser(node)) return true; const root = getCurrentRoot(); let cur = node; while (cur) { const p = findParentNode(root, cur.id); if (!p || p.isRoot) break; if (p.name === username) return true; cur = p; } return false; } return false; }
+  function canAddSibling(node) { if (!node || node.isRoot) return false; if (currentUserRole === 'admin') return true; if (currentUserRole === 'viewer') return false; if (isFatherOfCurrentUser(node)) return false; return canEditNode(node); }
+
+  function refreshEditButtons() {
+    const isAdmin = (currentUserRole === 'admin'); const isEditor = (currentUserRole === 'editor');
+    const node = selectedNodeId ? findNodeById(getCurrentRoot(), selectedNodeId) : null;
+    const canEdit = node ? canEditNode(node) : false; const canSibling = node ? canAddSibling(node) : false;
+    const editButtons = document.querySelectorAll('.edit-btn');
+    if (isAdmin) { editButtons.forEach(b => b.disabled = false); }
+    else if (isEditor) { editButtons.forEach(b => { if (b.id === 'btnAddSibling') b.disabled = !canSibling; else b.disabled = !canEdit; }); }
+    else { editButtons.forEach(b => b.disabled = true); }
+  }
+
+  async function openBackupDialog() {
+    if (currentUserRole !== 'admin') { alert('只有管理员可以使用备份管理'); return; }
+    try {
+      const res = await fetch('/api/data?action=list_backups');
+      if (!res.ok) { alert('获取备份列表失败'); return; }
+      const data = await res.json();
+      const backups = data.backups || [];
+      const overlay = document.createElement('div'); overlay.className = 'modal-overlay';
+      let listHtml = backups.length === 0 ? '<div style="padding:20px;text-align:center;color:#888;">暂无备份</div>' : backups.map(b => `<div style="display:flex;justify-content:space-between;padding:8px;border-bottom:1px solid #eee;"><span>${new Date(b.timestamp).toLocaleString()}</span><button data-key="${b.key}" class="restoreBtn btn-primary" style="padding:4px 12px;">恢复此版本</button></div>`).join('');
+      overlay.innerHTML = `<div class="modal-dialog"><div class="modal-header">备份管理（自动每5分钟备份）</div><div class="modal-body">${listHtml}</div><div class="modal-footer"><button class="btn-cancel" id="closeBackup">关闭</button></div></div>`;
+      document.body.appendChild(overlay);
+      overlay.querySelector('#closeBackup').onclick = () => overlay.remove();
+      overlay.querySelectorAll('.restoreBtn').forEach(btn => { btn.onclick = async () => { if (!confirm('确定要恢复到该备份吗？当前数据将被覆盖。')) return; const backupKey = btn.dataset.key; const res = await fetch('/api/data?action=restore', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ backupKey }) }); if (res.ok) { alert('恢复成功！页面将刷新。'); location.reload(); } else { const err = await res.json(); alert('恢复失败：' + (err.error || '未知错误')); } }; });
+      overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+    } catch (e) { alert('请求失败：' + e.message); }
+  }
+
+  async function openAdminDialog() {
+    if (currentUserRole !== 'admin') { alert('只有管理员可以使用用户管理'); return; }
+    try {
+      const res = await fetch('/api/admin/users');
+      if (!res.ok) { alert('获取用户列表失败'); return; }
+      const data = await res.json();
+      const users = data.users || [];
+      const overlay = document.createElement('div'); overlay.className = 'modal-overlay';
+      let listHtml = users.length === 0 ? '<div style="padding:20px;text-align:center;">暂无其他用户</div>' : users.map(u => `<div style="display:flex;justify-content:space-between;padding:8px;border-bottom:1px solid #eee;"><span>${escapeHtml(u.username)} (${u.role === 'editor' ? '编辑用户' : '浏览用户'})</span><div><button class="resetPwdBtn btn-primary" data-username="${escapeHtml(u.username)}" style="padding:4px 12px;margin-right:4px;">重置密码</button><button class="deleteUserBtn btn-primary" data-username="${escapeHtml(u.username)}" style="padding:4px 12px;background:#c42b1c;border-color:#a0301c;">删除</button></div></div>`).join('');
+      overlay.innerHTML = `<div class="modal-dialog"><div class="modal-header">用户管理</div><div class="modal-body">${listHtml}</div><div class="modal-footer"><button class="btn-cancel" id="closeAdmin">关闭</button></div></div>`;
+      document.body.appendChild(overlay);
+      overlay.querySelector('#closeAdmin').onclick = () => overlay.remove();
+      overlay.querySelectorAll('.resetPwdBtn').forEach(btn => { btn.onclick = async () => { if (!confirm(`确定要将用户 ${btn.dataset.username} 的密码重置为 123456 吗？`)) return; const res = await fetch('/api/admin/reset-password', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: btn.dataset.username }) }); if (res.ok) { alert('密码已重置'); overlay.remove(); openAdminDialog(); } else { const err = await res.json(); alert(err.error || '操作失败'); } }; });
+      overlay.querySelectorAll('.deleteUserBtn').forEach(btn => { btn.onclick = async () => { if (!confirm(`确定要删除用户 ${btn.dataset.username} 吗？此操作不可恢复！`)) return; const res = await fetch('/api/admin/delete-user', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: btn.dataset.username }) }); if (res.ok) { alert('用户已删除'); overlay.remove(); openAdminDialog(); } else { const err = await res.json(); alert(err.error || '删除失败'); } }; });
+      overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+    } catch (e) { alert('请求失败：' + e.message); }
+  }
+
+  function openSearchDialog() {
+    const overlay = document.createElement('div'); overlay.className = 'modal-overlay';
+    overlay.innerHTML = `<div class="modal-dialog" style="width:450px;"><div class="modal-header">🔍 搜索</div><div class="modal-body"><div class="form-group"><label>关键字（空格分隔）</label><input type="text" id="searchInput" style="width:100%;padding:8px;"></div></div><div class="modal-footer"><button class="btn-cancel" id="searchCancel">取消</button><button class="btn-primary" id="searchOk">搜索</button></div></div>`;
+    document.body.appendChild(overlay);
+    document.getElementById('searchCancel').onclick = () => overlay.remove();
+    document.getElementById('searchOk').onclick = () => { const kw = document.getElementById('searchInput').value.trim(); overlay.remove(); if (kw) searchMember(kw); };
+  }
+
+  function searchMember(kw) {
+    const keys = kw.split(/\s+/).filter(k => k.length > 0); if (!keys.length) return;
+    const res = []; const root = getCurrentRoot(); if (!root) return;
+    function match(n) { if (n.isRoot) return false; const attrsValues = (n.attributes || []).filter(a => a.name !== '简介').map(a => a.value || ''); const txt = [n.name, ...attrsValues].join(' ').toLowerCase(); return keys.every(k => txt.includes(k.toLowerCase())); }
+    function walk(n, path) { if (match(n)) res.push({ node: n, path }); if (n.children) n.children.forEach(c => walk(c, [...path, n.name])); }
+    walk(root, []);
+    if (!res.length) { alert('未找到'); return; }
+    if (res.length === 1) { const t = res[0].node; let p = t; while (p) { const par = findParentNode(root, p.id); if (par) expandedNodeIds.add(par.id); p = par; } expandedNodeIds.add(t.id); selectNode(t.id); switchTab('properties'); return; }
+    const overlay = document.createElement('div'); overlay.className = 'modal-overlay';
+    overlay.innerHTML = `<div class="modal-dialog"><div class="modal-header">找到 ${res.length} 位</div><div class="modal-body">${res.map(r => `<div style="padding:8px;cursor:pointer;border-bottom:1px solid #eee;" data-id="${r.node.id}">${escapeHtml(r.node.name)} <span style="color:#888;font-size:11px;">${r.path.join(' > ')}</span></div>`).join('')}</div><div class="modal-footer"><button class="btn-cancel">关闭</button></div></div>`;
+    document.body.appendChild(overlay);
+    overlay.querySelector('.btn-cancel').onclick = () => overlay.remove();
+    overlay.querySelectorAll('[data-id]').forEach(el => el.addEventListener('click', () => { const id = el.dataset.id; overlay.remove(); const node = findNodeById(root, id); if (node) { let p = node; while (p) { const par = findParentNode(root, p.id); if (par) expandedNodeIds.add(par.id); p = par; } expandedNodeIds.add(node.id); selectNode(node.id); switchTab('properties'); } }));
+  }
+
+  async function deleteAllData() {
+    if (currentUserRole !== 'admin') { alert('只有管理员可以删除所有数据'); return; }
+    if (appData.families.length === 0) { alert('没有数据可删除'); return; }
+    if (!confirm('确定删除所有家族及全部成员数据吗？此操作不可恢复，但您可撤销。')) return;
+    pendingDeleteAllData = JSON.parse(JSON.stringify(appData));
+    const ops = appData.families.map(f => ({ action: 'deleteFamily', payload: { familyId: f.id } }));
+    for (const op of ops) localApply(op);
+    appData.currentFamilyId = null; selectedNodeId = null; expandedNodeIds.clear();
+    saveDataToLocal(); renderTree(); refreshDetailView(); updateFamilySelector(); refreshEditButtons();
+    showUndoBarForAllData();
+    try {
+      const res = await fetch(CLOUD_API_URL, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ operations: ops }) });
+      if (res.ok) { const result = await res.json(); baseVersion = result.version; saveDataToLocal(); }
+      else { const err = await res.json(); showInfoBar('⚠️ 服务器同步失败: ' + (err.error || '未知错误'), 5000); }
+    } catch (e) { showInfoBar('⚠️ 网络错误，数据未同步', 5000); }
+  }
+  function showUndoBarForAllData() {
+    document.querySelectorAll('.undo-bar').forEach(el => el.remove());
+    const bar = document.createElement('div'); bar.className = 'undo-bar';
+    bar.innerHTML = `已删除所有数据 <button id="undoDeleteAllBtn">撤销删除 (Ctrl+Z)</button>`;
+    document.getElementById('appWindow').prepend(bar);
+    document.getElementById('undoDeleteAllBtn').onclick = () => {
+      if (!pendingDeleteAllData) return;
+      appData = pendingDeleteAllData; baseVersion = appData._version || 0; pendingDeleteAllData = null; pendingOperations = [];
+      selectedNodeId = null; expandedNodeIds.clear(); const root = getCurrentRoot(); if (root) expandedNodeIds.add(root.id);
+      saveDataToLocal(); renderTree(); refreshDetailView(); updateFamilySelector();
+      bar.remove(); showInfoBar('已撤销删除'); refreshEditButtons();
+    };
+  }
+
+  function showHelp() {
+    const overlay = document.createElement('div'); overlay.className = 'modal-overlay';
+    const helpContent = `源锦族谱管理系统 - 帮助文档
+
+一、用户角色与权限
+角色\t权限说明
+管理员 (admin)\t拥有全部功能：创建/删除/重命名家族，编辑所有成员信息，管理用户，导入导出数据，备份恢复。
+编辑用户 (editor)\t用户名需与族谱中某成员姓名一致。可编辑：本人、直系后代、父亲。可为上述成员添加子成员/兄弟。不可对父亲添加兄弟。不能新建/删除家族、编辑序言、导出关系图、使用文件菜单。
+浏览用户 (viewer)\t仅查看数据，不能做任何修改。
+
+二、快速入门
+选择家族：使用顶部工具栏的家族下拉菜单切换当前家族。
+查看成员：左侧树形列表点击成员，右侧显示详细信息。
+编辑信息：在“个人信息”选项卡中，双击某个字段即可修改。支持姓名、性别、出生日期、配偶、自定义属性等。
+添加成员：选中父成员后，点击“添加子成员”或右键选择操作。
+搜索：菜单栏“搜索”可按关键字查找成员，关键字包含名字、配偶姓氏。
+
+三、成员管理
+添加子成员：选中父节点，点击工具栏“➕ 添加子成员”。
+添加兄弟：选中某成员，点击“👥 添加兄弟”。
+删除成员：选中后点击“⚠️ 删除成员”，删除后可通过顶部撤销按钮或 Ctrl+Z 恢复。
+子女排序：选中父母节点，点击“↕️ 子女排序”，可拖动调整子女显示顺序。
+
+四、个人信息编辑
+双击表格中的“数据”列即可编辑。
+固定字段：姓名、性别、出生日期、出生地、配偶。
+点击“📝 添加信息”可添加自定义属性；点击“🗑️ 删除信息”可删除自定义属性。
+子女、女儿信息不可直接编辑，点击名称可跳转到对应成员。
+
+五、辈分关系图
+切换到“辈分关系图”选项卡查看树状结构。
+查看范围：可选择全图、上下各2代、同辈或自定义代数。
+缩放操作：使用 +/- 按钮或双指缩放（触屏）；点击“适应屏幕”自动调整大小。
+导出图片（仅管理员）：点击“📷 导出图片”保存为PNG。
+
+六、家族管理
+新建家族（管理员）：菜单栏“家族管理” → “新建家族”。
+切换家族：工具栏下拉菜单或家族管理窗口。
+序言编辑（管理员）：点击工具栏“📜 序言”可编写家族序言。
+
+七、数据同步与备份
+所有修改会在编辑完成后几秒内自动同步到云端。
+若多人同时编辑发生冲突，系统会弹出提示框，您可选择：
+重试同步：再次尝试提交本地修改。
+放弃本地修改，加载云端：用云端数据覆盖本地。
+忽略：保留本地修改，稍后处理。
+手动同步：菜单栏“文件”→“上传到云端”。
+备份管理（管理员）：菜单栏“备份管理”可查看自动备份（每5分钟一次）并恢复。
+
+八、用户管理（管理员）
+点击菜单栏“用户管理”，可重置其他用户的密码为 123456 或删除用户账号。
+
+九、快捷操作
+右键菜单：在树状列表右键成员可快速添加子成员/兄弟/信息/删除。
+键盘快捷键：
+Delete：删除选中成员。
+Ctrl+Z：撤销最近删除。
+面板分割条：左右拖拽可调整树状列表宽度。
+
+十、注意事项
+删除成员将同时删除其所有后代，请谨慎操作。
+编辑用户只能对授权范围内的成员进行修改。
+退出登录时本地未同步的数据会丢失，请确保修改已同步完成。
+建议管理员定期使用备份功能保护数据。
+
+关于系统
+系统名称：源锦族谱管理系统
+版本：v1.0
+开发/版权所有：林及第
+联系方式：ld-1212@163.com
+
+技术说明：
+前端采用纯 HTML/CSS/JavaScript 单页应用，支持响应式布局，适配移动端。
+数据存储与同步基于云端 API，采用操作日志（PATCH）+ 版本号机制实现多人协作。
+支持多家族管理、角色权限控制、辈分关系图可视化、导入导出（JSON）、图片导出等功能。
+开源/许可：保留所有权利，未经授权不得商用。`;
+    overlay.innerHTML = `<div class="modal-dialog" style="width:700px; max-width:95vw;">
+      <div class="modal-header">📖 帮助文档</div>
+      <div class="modal-body" style="max-height:70vh; overflow-y:auto;">
+        <pre style="white-space: pre-wrap; font-family: inherit; font-size: 12.5px; color: #333; line-height: 1.6; margin: 0;">${helpContent}</pre>
+      </div>
+      <div class="modal-footer"><button class="btn-cancel" id="helpClose">关闭</button></div>
+    </div>`;
+    document.body.appendChild(overlay);
+    overlay.querySelector('#helpClose').onclick = () => overlay.remove();
+    overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+  }
+
+  function changePassword() {
+    const overlay = document.createElement('div'); overlay.className = 'modal-overlay';
+    overlay.innerHTML = `<div class="modal-dialog" style="width:360px;"><div class="modal-header">修改密码</div><div class="modal-body">
+      <div class="form-group"><label>旧密码</label><input type="password" id="oldPass" style="width:100%;padding:8px;"></div>
+      <div class="form-group"><label>新密码</label><input type="password" id="newPass" style="width:100%;padding:8px;"></div>
+      <div class="form-group"><label>确认新密码</label><input type="password" id="confirmPass" style="width:100%;padding:8px;"></div>
+    </div><div class="modal-footer"><button class="btn-cancel" id="cancelChange">取消</button><button class="btn-primary" id="submitChange">确认修改</button></div></div>`;
+    document.body.appendChild(overlay);
+    document.getElementById('cancelChange').onclick = () => overlay.remove();
+    document.getElementById('submitChange').onclick = async () => {
+      const old = document.getElementById('oldPass').value, p1 = document.getElementById('newPass').value, p2 = document.getElementById('confirmPass').value;
+      if (!old || !p1 || !p2) { alert('所有字段必填'); return; } if (p1 !== p2) { alert('两次输入不一致'); return; } if (p1.length < 4) { alert('新密码至少4位'); return; }
+      try {
+        const res = await fetch('/api/auth/change-password', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ oldPassword: old, newPassword: p1 }) });
+        const data = await res.json();
+        if (res.ok) {
+          pendingOperations = []; localStorage.removeItem(STORAGE_KEY); localStorage.removeItem('has_pending_changes');
+          appData = { families: [], currentFamilyId: null };
+          alert('密码修改成功，请重新登录'); overlay.remove(); logout();
+        } else alert(data.error || '修改失败');
+      } catch { alert('网络错误'); }
+    };
+    overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+  }
+
+  async function logout() {
+    try { await syncNow(); } catch (e) {}
+    pendingOperations = []; localStorage.removeItem(STORAGE_KEY); localStorage.removeItem('has_pending_changes');
+    appData = { families: [], currentFamilyId: null };
+    fetch('/api/auth/logout', { method: 'POST' }).then(() => window.location.href = '/login.html').catch(() => window.location.href = '/login.html');
+  }
+
+  async function loadFromCloud() {
+    const hasPending = pendingOperations.length > 0 || localStorage.getItem('has_pending_changes') === '1';
+    let confirmMsg = '从云端加载将覆盖当前所有数据，确定继续吗？';
+    if (hasPending) confirmMsg = '您有未同步的本地修改，从云端加载将丢失这些修改，确定继续吗？';
+    if (!confirm(confirmMsg)) return;
+    showInfoBar('正在从云端加载...', 0);
+    try {
+      const res = await fetch(CLOUD_API_URL);
+      if (res.ok) {
+        const cloudData = await res.json();
+        if (cloudData.families && Array.isArray(cloudData.families)) { await loadRemoteData(cloudData, cloudData._version || 0); showInfoBar('✅ 云端数据加载成功', 3000); updateSyncStatus('success', '已同步'); }
+        else showInfoBar('❌ 云端数据格式错误', 3000);
+      } else {
+        if (res.status === 401) { showInfoBar('❌ 登录已过期，即将跳转到登录页', 3000); setTimeout(() => window.location.href = '/login.html', 1500); return; }
+        const text = await res.text();
+        if (text.startsWith('<!DOCTYPE') || text.startsWith('<html')) showInfoBar('❌ 服务器返回异常，请刷新页面重试', 5000);
+        else showInfoBar(`❌ 加载失败 (${res.status})`, 3000);
+      }
+    } catch (e) { showInfoBar(isNetworkError(e) ? '⚠️ 无法连接云端服务器' : `网络错误: ${e.message}`, 3000); }
+  }
+
+  function updateStatusBar() {
+    const root = getCurrentRoot(), fam = getCurrentFamily();
+    if (selectedNodeId && root) {
+      const node = findNodeById(root, selectedNodeId);
+      if (node && !node.isRoot) {
+        const ancestors = []; let cur = node;
+        while (cur) { if (!cur.isRoot) ancestors.unshift({ id: cur.id, name: cur.name }); cur = findParentNode(root, cur.id); }
+        const pathHtml = ancestors.map(a => `<a href="#" onclick="window.selectNode('${a.id}'); return false;" style="color:#0078d4; text-decoration:none; cursor:pointer;">${escapeHtml(a.name)}</a>`).join(' <span style="color:#888;">></span> ');
+        document.getElementById('statusPath').innerHTML = pathHtml;
+      } else document.getElementById('statusPath').textContent = fam ? fam.name : '族谱管理系统';
+    } else document.getElementById('statusPath').textContent = fam ? fam.name : '族谱管理系统';
+    const memberCount = root ? countMembers(root) : 0;
+    const genCount = root ? getMaxGeneration(root) : 0;
+    document.getElementById('statusCount').textContent = `共 ${memberCount} 位成员，${genCount} 代`;
+  }
+
+  function setupPinchZoom() {
+    const container = document.getElementById('orgChartContainer');
+    if (!container) return;
+    let initialDistance = 0, initialScale = 1;
+    container.addEventListener('touchstart', (e) => { if (e.touches.length === 2) { e.preventDefault(); initialDistance = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY); initialScale = currentScale; } }, { passive: false });
+    container.addEventListener('touchmove', (e) => { if (e.touches.length === 2) { e.preventDefault(); const newDistance = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY); if (initialDistance > 0) { const newScale = initialScale * (newDistance / initialDistance); currentScale = Math.min(3, Math.max(0.2, newScale)); applyScale(); updateZoomButtons(); autoFitEnabled = false; } } }, { passive: false });
+    container.addEventListener('touchend', () => { initialDistance = 0; });
+  }
+
+  function setupSash() {
+    if (document.body.classList.contains('mobile-layout')) return;
+    const sash = document.getElementById('sash'), treePanel = document.getElementById('treePanel');
+    let startX = 0, startWidth = 0, dragging = false;
+    function onMouseMove(e) { if (!dragging) return; e.preventDefault(); const dx = e.clientX - startX; let w = Math.max(180, startWidth + dx); treePanel.style.width = w + 'px'; sash.classList.add('active'); }
+    function onMouseUp() { dragging = false; sash.classList.remove('active'); document.removeEventListener('mousemove', onMouseMove); document.removeEventListener('mouseup', onMouseUp); document.body.style.cursor = ''; }
+    sash.addEventListener('mousedown', e => { e.preventDefault(); dragging = true; startX = e.clientX; startWidth = treePanel.getBoundingClientRect().width; document.addEventListener('mousemove', onMouseMove); document.addEventListener('mouseup', onMouseUp); document.body.style.cursor = 'col-resize'; });
+  }
+
   function exportChartImage() {
+    if (currentUserRole !== 'admin') { alert('只有管理员可以导出图片'); return; }
     const orgTree = document.getElementById('orgTree'), container = document.getElementById('orgChartContainer');
     if (!orgTree || !container) return;
     const prevT = orgTree.style.transform, prevO = container.style.overflow, prevW = container.style.width, prevH = container.style.height;
@@ -1140,62 +1601,45 @@
     }).catch(err => { orgTree.style.transform = prevT; container.style.overflow = prevO; container.style.width = prevW; container.style.height = prevH; shadows.forEach(s => s.n.style.boxShadow = s.bs); alert('导出失败:' + err); });
   }
 
-  function showHelp() {
-    const overlay = document.createElement('div'); overlay.className = 'modal-overlay';
-    const helpContent = `源锦族谱管理系统 - 帮助文档\n\n一、使用说明\n本系统为本地单机版，所有数据保存在浏览器本地存储中。\n无需联网即可使用全部编辑功能。\n\n二、快速入门\n选择家族：顶部下拉菜单切换。\n查看成员：左侧树形列表点击。\n编辑信息：双击表格字段进行修改。\n添加成员：选中父节点后点击工具栏按钮或右键。\n搜索：菜单栏搜索成员。\n\n三、数据管理\n导出：文件菜单 -> 导出所有家族（JSON文件）。\n导入：文件菜单 -> 导入（选择之前导出的JSON文件）。\n删除所有数据：文件菜单 -> 删除所有数据（可撤销）。\n\n四、辈分关系图\n支持全图、上下各2代、同辈及自定义范围。\n使用缩放按钮或触屏手势调整视图。\n点击“导出图片”保存为PNG。\n\n五、注意事项\n- 删除成员将同时删除其所有后代。\n- 定期使用导出功能备份数据。\n- 清除浏览器数据会导致数据丢失，请提前导出备份。\n\n关于系统\n系统名称：源锦族谱管理系统\n版本：v1.0\n开发/版权所有：林及第\n联系方式：ld-1212@163.com`;
-    overlay.innerHTML = `<div class="modal-dialog" style="width:700px; max-width:95vw;">
-      <div class="modal-header">📖 帮助文档</div>
-      <div class="modal-body" style="max-height:70vh; overflow-y:auto;">
-        <pre style="white-space: pre-wrap; font-family: inherit; font-size: 12.5px; color: #333; line-height: 1.6; margin: 0;">${helpContent}</pre>
-      </div>
-      <div class="modal-footer"><button class="btn-cancel" id="helpClose">关闭</button></div>
-    </div>`;
-    document.body.appendChild(overlay);
-    overlay.querySelector('#helpClose').onclick = () => overlay.remove();
-    overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
-  }
-
-  // ==================== 初始化 ====================
-  function setupPinchZoom() {
-    const container = document.getElementById('orgChartContainer');
-    if (!container) return;
-    let initialDistance = 0, initialScale = 1;
-    container.addEventListener('touchstart', (e) => { if (e.touches.length === 2) { e.preventDefault(); initialDistance = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY); initialScale = currentScale; } }, { passive: false });
-    container.addEventListener('touchmove', (e) => { if (e.touches.length === 2) { e.preventDefault(); const newDistance = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY); if (initialDistance > 0) { const newScale = initialScale * (newDistance / initialDistance); currentScale = Math.min(3, Math.max(0.2, newScale)); applyScale(); updateZoomButtons(); autoFitEnabled = false; } } }, { passive: false });
-    container.addEventListener('touchend', () => { initialDistance = 0; });
-  }
-
-  function setupSash() {
-    if (document.body.classList.contains('mobile-layout')) return;
-    const sash = document.getElementById('sash'), treePanel = document.getElementById('treePanel');
-    let startX = 0, startWidth = 0, dragging = false;
-    function onMouseMove(e) { if (!dragging) return; e.preventDefault(); const dx = e.clientX - startX; let w = Math.max(180, startWidth + dx); treePanel.style.width = w + 'px'; sash.classList.add('active'); }
-    function onMouseUp() { dragging = false; sash.classList.remove('active'); document.removeEventListener('mousemove', onMouseMove); document.removeEventListener('mouseup', onMouseUp); document.body.style.cursor = ''; }
-    sash.addEventListener('mousedown', e => { e.preventDefault(); dragging = true; startX = e.clientX; startWidth = treePanel.getBoundingClientRect().width; document.addEventListener('mousemove', onMouseMove); document.addEventListener('mouseup', onMouseUp); document.body.style.cursor = 'col-resize'; });
+  function uploadOnClose() {
+    if (pendingOperations.length > 0) {
+      const ops = [...pendingOperations];
+      fetch(CLOUD_API_URL, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ operations: ops, baseVersion: baseVersion || 1 }),
+        keepalive: true
+      }).catch(() => {});
+    }
   }
 
   document.addEventListener('keydown', function(e) {
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
     if (e.key === 'Delete') { e.preventDefault(); if (selectedNodeId) deleteSelectedMember(); }
-    else if (e.ctrlKey && e.key === 'z') { e.preventDefault(); if (undoStack.length > 0) performUndo(); else if (pendingDeleteAllData) performUndoAll(); }
+    else if (e.ctrlKey && e.key === 'z') {
+      e.preventDefault();
+      if (undoStack.length > 0) performUndo();
+      else if (pendingDeleteAllData) performUndoAll();
+    }
   });
 
   document.addEventListener('focusin', (e) => { if (e.target.matches('input, textarea, select')) isUserEditing = true; });
-  document.addEventListener('focusout', () => { setTimeout(() => { if (!document.activeElement || !document.activeElement.matches('input, textarea, select')) isUserEditing = false; }, 200); });
+  document.addEventListener('focusout', () => { setTimeout(() => { if (!document.activeElement || !document.activeElement.matches('input, textarea, select')) { isUserEditing = false; scheduleSync(); } }, 200); });
 
-  function init() {
-    initLocalAuth();
+  async function init() {
+    const authOk = await checkAuth();
+    if (!authOk) return;
     loadData();
-    const root = getCurrentRoot();
-    if (root) expandedNodeIds.add(root.id);
-    renderTree();
-    updateStatusBar();
-    updateFamilySelector();
-    updateSyncStatus('local', '本地存储');
-    refreshEditButtons();
+    initialSyncFromCloud().then(() => {
+      const root = getCurrentRoot();
+      if (root) expandedNodeIds.add(root.id);
+      renderTree(); updateStatusBar(); updateFamilySelector();
+      startAutoSync();
+      updateSyncStatus('idle', '已同步');
+    });
     setupPinchZoom();
     setupSash();
-    // 菜单下拉
+    window.addEventListener('beforeunload', uploadOnClose);
     document.querySelectorAll('.menu-item[data-menu]').forEach(item => {
       const dd = item.querySelector('.dropdown-menu');
       if (dd) {
@@ -1204,44 +1648,22 @@
       }
     });
     document.addEventListener('click', () => document.querySelectorAll('.dropdown-menu.show').forEach(m => m.classList.remove('show')));
-    updateViewModeButtons('full');
-    updateZoomButtons();
+    updateViewModeButtons('full'); updateZoomButtons();
+    window.setViewMode = setViewMode; window.zoomIn = zoomIn; window.zoomOut = zoomOut; window.zoomToFit = zoomToFit; window.zoomReset = zoomReset;
+    window.exportChartImage = exportChartImage; window.openSortDialog = openSortDialog; window.openSearchDialog = openSearchDialog;
+    window.openFamilyManageDialog = openFamilyManageDialog; window.openPrefaceDialog = openPrefaceDialog;
+    window.changePassword = changePassword; window.logout = logout; window.deleteAllData = deleteAllData;
+    window.syncNow = syncNow; window.openBackupDialog = openBackupDialog; window.openAdminDialog = openAdminDialog;
+    window.loadFromCloud = loadFromCloud;
   }
-
-  // 暴露全局方法
-  window.addChildMember = addChildMember;
-  window.addSiblingMember = addSiblingMember;
-  window.deleteSelectedMember = deleteSelectedMember;
-  window.addAttribute = addAttribute;
-  window.deleteAttribute = deleteAttribute;
-  window.expandAllNodes = expandAllNodes;
-  window.collapseAllNodes = collapseAllNodes;
-  window.exportData = exportData;
-  window.importData = importData;
-  window.deleteAllData = deleteAllData;
-  window.showHelp = showHelp;
-  window.handleFileImport = handleFileImport;
-  window.switchTab = switchTab;
-  window.switchFamily = switchFamily;
-  window.syncNow = syncNow;
-  window.loadFromCloud = loadFromCloud;
-  window.selectNode = selectNode;
-  window.openBackupDialog = openBackupDialog;
-  window.openAdminDialog = openAdminDialog;
-  window.openSearchDialog = () => {}; // 搜索暂保留空实现
-  window.openFamilyManageDialog = () => {}; // 家族管理暂保留空实现
-  window.openPrefaceDialog = () => {}; // 序言暂保留空实现
-  window.changePassword = changePassword;
-  window.logout = logout;
-  window.setViewMode = setViewMode;
-  window.zoomIn = zoomIn;
-  window.zoomOut = zoomOut;
-  window.zoomToFit = zoomToFit;
-  window.zoomReset = zoomReset;
-  window.exportChartImage = exportChartImage;
-  window.openSortDialog = () => {}; // 排序暂保留空实现
-
   init();
+  window.addChildMember = addChildMember; window.addSiblingMember = addSiblingMember;
+  window.deleteSelectedMember = deleteSelectedMember; window.addAttribute = addAttribute; window.deleteAttribute = deleteAttribute;
+  window.expandAllNodes = expandAllNodes; window.collapseAllNodes = collapseAllNodes;
+  window.exportData = exportData; window.importData = importData; window.deleteAllData = deleteAllData;
+  window.showHelp = showHelp; window.handleFileImport = handleFileImport; window.switchTab = switchTab;
+  window.switchFamily = switchFamily; window.syncToCloud = syncNow; window.loadFromCloud = loadFromCloud;
+  window.selectNode = selectNode; window.openBackupDialog = openBackupDialog; window.openAdminDialog = openAdminDialog;
 })();
 </script>
 </body>
