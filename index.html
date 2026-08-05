@@ -727,7 +727,7 @@
               throw new Error(`服务器错误 (${res.status}): ${text}`);
             }
           } catch (cloudErr) {
-            data._version = baseVersion; // 保持当前版本号，避免后续同步失败
+            data._version = baseVersion;
             showInfoBar('☁️ 无法连接云端，已离线导入数据', 5000);
             console.warn('导入时云端不可用:', cloudErr);
           }
@@ -1072,14 +1072,19 @@
     if (isAdmin) {
       overlay.querySelector('#newFamilyBtn').onclick = () => {
         const name = prompt('请输入新家族名称：');
-        if (name && name.trim()) {
-          const newRoot = { id: 'root', name: name.trim(), isRoot: true, children: [] };
-          const newFam = { id: generateId(), name: name.trim(), root: newRoot, preface: '' };
-          if (addOperation('addFamily', { family: newFam })) {
-            appData.currentFamilyId = newFam.id;
-            selectedNodeId = null; expandedNodeIds.clear(); expandedNodeIds.add(newRoot.id);
-            renderTree(); refreshDetailView(); updateFamilySelector(); overlay.remove(); refreshEditButtons();
-          }
+        if (!name || !name.trim()) return;
+        const trimmedName = name.trim();
+        // 重名检查
+        if (appData.families.some(f => f.name === trimmedName)) {
+          alert(`家族名称“${trimmedName}”已存在，请使用其他名称。`);
+          return;
+        }
+        const newRoot = { id: 'root', name: trimmedName, isRoot: true, children: [] };
+        const newFam = { id: generateId(), name: trimmedName, root: newRoot, preface: '' };
+        if (addOperation('addFamily', { family: newFam })) {
+          appData.currentFamilyId = newFam.id;
+          selectedNodeId = null; expandedNodeIds.clear(); expandedNodeIds.add(newRoot.id);
+          renderTree(); refreshDetailView(); updateFamilySelector(); overlay.remove(); refreshEditButtons();
         }
       };
     }
@@ -1455,7 +1460,7 @@
 导出图片（仅管理员）：点击“📷 导出图片”保存为PNG。
 
 六、家族管理
-新建家族（管理员）：菜单栏“家族管理” → “新建家族”。
+新建家族（管理员）：菜单栏“家族管理” → “新建家族”，系统会检查家族名称是否重复。
 切换家族：工具栏下拉菜单或家族管理窗口。
 序言编辑（管理员）：点击工具栏“📜 序言”可编写家族序言。
 
@@ -1481,7 +1486,7 @@ Ctrl+Z：撤销最近删除。
 十、注意事项
 删除成员将同时删除其所有后代，请谨慎操作。
 编辑用户只能对授权范围内的成员进行修改。
-退出登录时本地未同步的数据会丢失，请确保修改已同步完成。
+退出登录时本地未同步的数据可能会丢失，请确保修改已同步完成。
 建议管理员定期使用备份功能保护数据。
 
 关于系统
@@ -1524,7 +1529,6 @@ Ctrl+Z：撤销最近删除。
         const data = await res.json();
         if (res.ok) {
           pendingOperations = []; localStorage.removeItem('has_pending_changes');
-          // 不删除家族数据，仅清理同步状态
           alert('密码修改成功，请重新登录'); overlay.remove(); logout();
         } else alert(data.error || '修改失败');
       } catch { alert('网络错误'); }
@@ -1536,7 +1540,7 @@ Ctrl+Z：撤销最近删除。
     try { await syncNow(); } catch (e) {}
     pendingOperations = [];
     localStorage.removeItem('has_pending_changes');
-    // 不清除家族数据，下次登录继续使用
+    // 不清除家族数据，保留本地数据供下次登录使用
     fetch('/api/auth/logout', { method: 'POST' }).then(() => window.location.href = '/login.html').catch(() => window.location.href = '/login.html');
   }
 
@@ -1620,7 +1624,6 @@ Ctrl+Z：撤销最近删除。
   function uploadOnClose() {
     if (pendingOperations.length > 0) {
       const ops = [...pendingOperations];
-      // 使用 POST 兼容 keepalive
       fetch(CLOUD_API_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
