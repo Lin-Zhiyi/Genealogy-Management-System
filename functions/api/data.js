@@ -9,6 +9,7 @@ export async function onRequest(context) {
     return new Response('Not found', { status: 404 });
   }
 
+  // CORS 头
   const origin = request.headers.get('Origin') || '';
   const allowedOrigins = ['https://yourdomain.com', 'http://localhost:8787'];
   const headers = {
@@ -17,17 +18,16 @@ export async function onRequest(context) {
     'Access-Control-Allow-Headers': 'Content-Type',
     'Access-Control-Allow-Credentials': 'true',
   };
-
   if (allowedOrigins.includes(origin)) {
     headers['Access-Control-Allow-Origin'] = origin;
   } else if (origin) {
     headers['Access-Control-Allow-Origin'] = 'null';
   }
-
   if (request.method === 'OPTIONS') {
     return new Response(null, { headers });
   }
 
+  // 获取当前用户
   let username, role;
   try {
     const tokenPayload = await getUserFromCookie(request, env.JWT_SECRET);
@@ -40,6 +40,7 @@ export async function onRequest(context) {
     return new Response(JSON.stringify({ error: '认证失败' }), { status: 401, headers });
   }
 
+  // KV 绑定检查
   const kv = env.genealogy_management_system;
   if (!kv) {
     console.error('KV 绑定 "genealogy_management_system" 未配置');
@@ -51,6 +52,7 @@ export async function onRequest(context) {
   const backupLastTimeKey = 'family-data-backup-lasttime';
   const BACKUP_INTERVAL_MS = 5 * 60 * 1000;
 
+  // ---------- 数据读取 ----------
   async function getCurrentData() {
     try {
       const raw = await kv.get(kvKey);
@@ -76,30 +78,79 @@ export async function onRequest(context) {
       await kv.put(backupKey, JSON.stringify(data));
       let list = [];
       const listRaw = await kv.get(backupListKey);
-      if (listRaw) {
-        list = JSON.parse(listRaw);
-      }
+      if (listRaw) list = JSON.parse(listRaw);
       list.push({ key: backupKey, timestamp });
       if (list.length > 10) {
         const removed = list.splice(0, list.length - 10);
-        for (const item of removed) {
-          ctx.waitUntil(kv.delete(item.key));
-        }
+        for (const item of removed) ctx.waitUntil(kv.delete(item.key));
       }
       await kv.put(backupListKey, JSON.stringify(list));
       await kv.put(backupLastTimeKey, String(timestamp));
     }
   }
 
-  // 节点查找函数（略，同之前）
-  function findNodeInFamily(family, id) { /* ... */ }
-  function findParentInFamily(family, targetId) { /* ... */ }
-  function findNodeInTree(node, id) { /* ... */ }
-  function findParentInTree(node, targetId) { /* ... */ }
-  function findMemberByName(data, name) { /* ... */ }
-  function findMemberInTree(node, name) { /* ... */ }
-  function addDescendants(node, set) { /* ... */ }
+  // ---------- 节点查找 ----------
+  function findNodeInFamily(family, id) {
+    if (!family || !family.root) return null;
+    return findNodeInTree(family.root, id);
+  }
 
+  function findParentInFamily(family, targetId) {
+    if (!family || !family.root) return null;
+    return findParentInTree(family.root, targetId);
+  }
+
+  function findNodeInTree(node, id) {
+    if (node.id === id) return node;
+    if (node.children) {
+      for (const child of node.children) {
+        const found = findNodeInTree(child, id);
+        if (found) return found;
+      }
+    }
+    return null;
+  }
+
+  function findParentInTree(node, targetId) {
+    if (!node.children) return null;
+    for (const child of node.children) {
+      if (child.id === targetId) return node;
+      const found = findParentInTree(child, targetId);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  function findMemberByName(data, name) {
+    if (!data || !data.families) return null;
+    for (const fam of data.families) {
+      const found = findMemberInTree(fam.root, name);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  function findMemberInTree(node, name) {
+    if (!node.isRoot && node.name === name) return node;
+    if (node.children) {
+      for (const child of node.children) {
+        const found = findMemberInTree(child, name);
+        if (found) return found;
+      }
+    }
+    return null;
+  }
+
+  function addDescendants(node, set) {
+    if (node.children) {
+      for (const child of node.children) {
+        set.add(child.id);
+        addDescendants(child, set);
+      }
+    }
+  }
+
+  // ---------- 权限校验 ----------
   function checkPermission(data, username, role, action, payload) {
     if (role === 'admin') return true;
     if (role === 'viewer') return false;
@@ -142,6 +193,7 @@ export async function onRequest(context) {
     return false;
   }
 
+  // ---------- 应用操作 ----------
   function applyOperation(rootData, op, username, role) {
     const { action, payload } = op;
     if (!checkPermission(rootData, username, role, action, payload)) {
