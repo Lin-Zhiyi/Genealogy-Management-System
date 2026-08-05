@@ -4,8 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes, viewport-fit=cover">
   <title>源锦族谱管理系统</title>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js">
-  </script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
   <style>
     :root {
       --bg-menu: #f2f2f2;
@@ -645,9 +644,21 @@
             if (cloudVersion > localVersion) await replayOperationsOnLatestData(cloudData, cloudVersion);
             else await syncNow();
           } else await loadRemoteData(cloudData, cloudVersion);
+          updateSyncStatus('success', '已同步');
+        } else {
+          updateSyncStatus('error', '云端数据格式异常');
         }
-      } else if (res.status === 401) window.location.href = '/login.html';
-    } catch (e) { console.warn('初始同步失败，使用本地数据:', e); }
+      } else if (res.status === 401) {
+        window.location.href = '/login.html';
+      } else {
+        const text = await res.text().catch(() => '');
+        updateSyncStatus('error', `从云端加载失败 (${res.status})`);
+        console.warn('initialSyncFromCloud 失败:', text);
+      }
+    } catch (e) {
+      updateSyncStatus('error', '无法连接云端');
+      console.warn('初始同步网络错误:', e);
+    }
   }
 
   async function replayOperationsOnLatestData(cloudData, cloudVersion) {
@@ -699,13 +710,30 @@
       try {
         const data = JSON.parse(ev.target.result);
         if (data.families && Array.isArray(data.families)) {
+          let versionSet = false;
           try {
-            data._forceOverwrite = true;
-            const res = await fetch(CLOUD_API_URL, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
-            if (res.ok) { const result = await res.json(); baseVersion = result.version; data._version = result.version; }
-            else throw new Error('云端不可用');
-          } catch (cloudErr) { data._version = baseVersion; showInfoBar('☁️ 无法连接云端，已离线导入数据', 3000); }
-          appData = data; pendingOperations = []; selectedNodeId = null; expandedNodeIds.clear();
+            const res = await fetch(CLOUD_API_URL, {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ ...data, _forceOverwrite: true })
+            });
+            if (res.ok) {
+              const result = await res.json();
+              baseVersion = result.version;
+              data._version = result.version;
+              versionSet = true;
+            } else {
+              const text = await res.text();
+              throw new Error(`服务器错误 (${res.status}): ${text}`);
+            }
+          } catch (cloudErr) {
+            data._version = baseVersion; // 保持当前版本号，避免后续同步失败
+            showInfoBar('☁️ 无法连接云端，已离线导入数据', 5000);
+            console.warn('导入时云端不可用:', cloudErr);
+          }
+          appData = data;
+          pendingOperations = [];
+          selectedNodeId = null; expandedNodeIds.clear();
           const root = getCurrentRoot(); if (root) expandedNodeIds.add(root.id);
           saveDataToLocal(); renderTree(); refreshDetailView(); updateFamilySelector(); switchTab('properties'); refreshEditButtons();
         } else if (data.isRoot) {
@@ -1021,7 +1049,6 @@
     overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
   }
 
-  // ========== 修复后的 openFamilyManageDialog（含重名检测） ==========
   function openFamilyManageDialog() {
     const overlay = document.createElement('div'); overlay.className = 'modal-overlay';
     const isAdmin = (currentUserRole === 'admin');
@@ -1046,24 +1073,12 @@
       overlay.querySelector('#newFamilyBtn').onclick = () => {
         const name = prompt('请输入新家族名称：');
         if (name && name.trim()) {
-          const trimmed = name.trim();
-          // 【修复】检查重名
-          if (appData.families.some(f => f.name === trimmed)) {
-            alert('家族名称已存在，请使用其他名称');
-            return;
-          }
-          const newRoot = { id: 'root', name: trimmed, isRoot: true, children: [] };
-          const newFam = { id: generateId(), name: trimmed, root: newRoot, preface: '' };
+          const newRoot = { id: 'root', name: name.trim(), isRoot: true, children: [] };
+          const newFam = { id: generateId(), name: name.trim(), root: newRoot, preface: '' };
           if (addOperation('addFamily', { family: newFam })) {
             appData.currentFamilyId = newFam.id;
-            selectedNodeId = null;
-            expandedNodeIds.clear();
-            expandedNodeIds.add(newRoot.id);
-            renderTree();
-            refreshDetailView();
-            updateFamilySelector();
-            overlay.remove();
-            refreshEditButtons();
+            selectedNodeId = null; expandedNodeIds.clear(); expandedNodeIds.add(newRoot.id);
+            renderTree(); refreshDetailView(); updateFamilySelector(); overlay.remove(); refreshEditButtons();
           }
         }
       };
@@ -1508,8 +1523,8 @@ Ctrl+Z：撤销最近删除。
         const res = await fetch('/api/auth/change-password', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ oldPassword: old, newPassword: p1 }) });
         const data = await res.json();
         if (res.ok) {
-          pendingOperations = []; localStorage.removeItem(STORAGE_KEY); localStorage.removeItem('has_pending_changes');
-          appData = { families: [], currentFamilyId: null };
+          pendingOperations = []; localStorage.removeItem('has_pending_changes');
+          // 不删除家族数据，仅清理同步状态
           alert('密码修改成功，请重新登录'); overlay.remove(); logout();
         } else alert(data.error || '修改失败');
       } catch { alert('网络错误'); }
@@ -1519,8 +1534,9 @@ Ctrl+Z：撤销最近删除。
 
   async function logout() {
     try { await syncNow(); } catch (e) {}
-    pendingOperations = []; localStorage.removeItem(STORAGE_KEY); localStorage.removeItem('has_pending_changes');
-    appData = { families: [], currentFamilyId: null };
+    pendingOperations = [];
+    localStorage.removeItem('has_pending_changes');
+    // 不清除家族数据，下次登录继续使用
     fetch('/api/auth/logout', { method: 'POST' }).then(() => window.location.href = '/login.html').catch(() => window.location.href = '/login.html');
   }
 
@@ -1538,9 +1554,9 @@ Ctrl+Z：撤销最近删除。
         else showInfoBar('❌ 云端数据格式错误', 3000);
       } else {
         if (res.status === 401) { showInfoBar('❌ 登录已过期，即将跳转到登录页', 3000); setTimeout(() => window.location.href = '/login.html', 1500); return; }
-        const text = await res.text();
+        const text = await res.text().catch(() => '未知错误');
         if (text.startsWith('<!DOCTYPE') || text.startsWith('<html')) showInfoBar('❌ 服务器返回异常，请刷新页面重试', 5000);
-        else showInfoBar(`❌ 加载失败 (${res.status})`, 3000);
+        else showInfoBar(`❌ 加载失败 (${res.status})：${text.substring(0, 60)}`, 5000);
       }
     } catch (e) { showInfoBar(isNetworkError(e) ? '⚠️ 无法连接云端服务器' : `网络错误: ${e.message}`, 3000); }
   }
@@ -1604,8 +1620,9 @@ Ctrl+Z：撤销最近删除。
   function uploadOnClose() {
     if (pendingOperations.length > 0) {
       const ops = [...pendingOperations];
+      // 使用 POST 兼容 keepalive
       fetch(CLOUD_API_URL, {
-        method: 'PATCH',
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ operations: ops, baseVersion: baseVersion || 1 }),
         keepalive: true
